@@ -1,0 +1,20 @@
+{
+  "name": "earnapp-manager",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "build": "npm --prefix web run build",
+    "setup": "npm install && npm --prefix web install && npm run build",
+    "test": "node --disable-warning=ExperimentalWarning scripts/test-sync.mjs && node --disable-warning=ExperimentalWarning scripts/test-reports.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "undici": "^7.16.0"
+  }
+}
