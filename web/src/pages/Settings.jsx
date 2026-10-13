@@ -11,6 +11,7 @@ const NOTIFY = [
   ['notify_account_banned', 'Tài khoản bị khoá', 'Kèm số dư bị kẹt'],
   ['notify_suspect', 'Tài khoản nghi bị khoá', 'Máy biến mất hết hoặc số dư tụt mà không có lệnh rút'],
   ['notify_auth', 'Cookie hết hạn', 'Cần cập nhật cookie để tiếp tục theo dõi'],
+  ['notify_sync_error', 'Không lấy được dữ liệu', 'Proxy chết, mất mạng… lỗi liên tiếp quá số lần cài bên dưới'],
   ['notify_rate_limit', 'Bị EarnApp giới hạn truy cập', 'Báo khi bị chặn liên tục (lần thứ 3 trở đi)'],
   ['notify_payout', 'Rút tiền', 'Có lệnh rút mới và khi tiền về'],
 ];
@@ -116,6 +117,10 @@ export default function Settings() {
               <NumberRow label="Báo &quot;không ra tiền&quot; sau" hint="Máy online mà không tăng tiền quá mức này thì báo vàng">
                 <NumInput value={s.idle_hours} onChange={v => set('idle_hours', v)} />
                 <Unit>giờ</Unit>
+              </NumberRow>
+              <NumberRow label="Báo lỗi lấy dữ liệu sau" hint="Một acc lỗi liên tiếp (proxy chết, mất mạng…) quá số lần này thì báo">
+                <NumInput value={s.error_alert_count} onChange={v => set('error_alert_count', v)} />
+                <Unit>lần</Unit>
               </NumberRow>
               {Number(s.sync_max_min) < Number(s.sync_min_min) && (
                 <p className="py-2 text-sm text-red-600 dark:text-red-400">Số phút tối đa phải lớn hơn hoặc bằng tối thiểu.</p>

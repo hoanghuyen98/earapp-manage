@@ -62,11 +62,11 @@ export function summary() {
       COALESCE(SUM(earnings_total), 0) AS lifetime,
       COALESCE(SUM(CASE WHEN status != 'banned' THEN balance END), 0) AS current,
       COALESCE(SUM(CASE WHEN status = 'banned' THEN balance END), 0) AS banned,
-      COUNT(*) AS accounts,
-      SUM(status = 'running') AS running,
-      SUM(status = 'stopped') AS stopped,
+      SUM(archived_at IS NULL) AS accounts,
+      SUM(status = 'running' AND archived_at IS NULL) AS running,
+      SUM(status = 'stopped' AND archived_at IS NULL) AS stopped,
       SUM(status = 'banned') AS banned_accounts,
-      SUM(auth_state IN ('expired', 'error')) AS auth_problems,
+      SUM(auth_state IN ('expired', 'error') AND archived_at IS NULL) AS auth_problems,
       SUM(suspect_reason != '') AS suspects,
       SUM(backoff_until > ?) AS rate_limited
     FROM accounts`).get(Date.now());
@@ -95,7 +95,7 @@ export function summary() {
     lifetime: round(t.lifetime), current: round(t.current), withdrawn: round(w.withdrawn), banned: round(t.banned),
     pending: round(w.pending), pending_count: w.pending_count || 0,
     today: round(earn(today)), yesterday: round(earn(addDays(today, -1))), month: round(month),
-    accounts: { total: t.accounts, running: t.running || 0, stopped: t.stopped || 0, banned: t.banned_accounts || 0, auth_problems: t.auth_problems || 0, suspects: t.suspects || 0, rate_limited: t.rate_limited || 0 },
+    accounts: { total: t.accounts || 0, running: t.running || 0, stopped: t.stopped || 0, banned: t.banned_accounts || 0, auth_problems: t.auth_problems || 0, suspects: t.suspects || 0, rate_limited: t.rate_limited || 0 },
     devices: { online: d.online || 0, idle: d.idle || 0, offline: d.offline || 0, banned: d.banned || 0 },
     usd_vnd: s.usd_vnd,
   };

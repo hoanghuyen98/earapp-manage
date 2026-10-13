@@ -276,4 +276,32 @@ fake = okB({ money: { balance: 0.5, earnings_total: 20 } });
 await syncAccount(accB(), s());
 assert.equal(accB().empty_status_streak, 0);
 
+// 22. Lỗi lấy dữ liệu liên tiếp (proxy chết…): báo đúng 1 lần khi đủ ngưỡng, báo khi hết lỗi
+const { NetworkError, normalizeProxy } = await import('../server/earnapp.js');
+setSettings({ error_alert_count: 3, notify_sync_error: true });
+fake = new NetworkError('Không kết nối được EarnApp qua proxy: bị từ chối kết nối (ECONNREFUSED)');
+const errAlerts = [];
+for (let i = 0; i < 5; i++) errAlerts.push(...await syncAccount(accB(), s()));
+assert.equal(accB().error_streak, 5);
+assert.equal(accB().auth_state, 'error');
+assert.equal(errAlerts.filter(a => a.type === 'sync_error').length, 1, 'chỉ báo 1 lần ở lần lỗi thứ 3');
+assert.ok(formatAlerts(errAlerts, s()).includes('ECONNREFUSED'));
+fake = okB({ money: { balance: 0.5, earnings_total: 20 } });
+alerts = await syncAccount(accB(), s());
+assert.ok(has(alerts, 'sync_ok'), 'báo lấy được dữ liệu trở lại');
+assert.equal(accB().error_streak, 0);
+// Lỗi 1-2 lần rồi hết: không báo gì
+fake = new Error('EarnApp money lỗi 500');
+assert.equal((await syncAccount(accB(), s())).length, 0);
+fake = okB({ money: { balance: 0.5, earnings_total: 20 } });
+assert.ok(!has(await syncAccount(accB(), s()), 'sync_ok'), 'chưa từng báo lỗi thì không báo hết lỗi');
+
+// 23. Proxy: http, socks5, dạng host:port:user:pass
+assert.equal(normalizeProxy(''), '');
+assert.equal(normalizeProxy('1.2.3.4:8080'), 'http://1.2.3.4:8080');
+assert.equal(normalizeProxy('1.2.3.4:8080:user:p@ss'), 'http://user:p%40ss@1.2.3.4:8080');
+assert.equal(normalizeProxy('socks5://1.2.3.4:1080:user:pass'), 'socks5://user:pass@1.2.3.4:1080');
+assert.equal(normalizeProxy('socks5h://u:p@host.com:1080'), 'socks5://u:p@host.com:1080');
+assert.throws(() => normalizeProxy('ftp://1.2.3.4:21'), /chỉ hỗ trợ/);
+
 console.log('✅ Tất cả test đều đạt');

@@ -133,7 +133,7 @@ function groupRows(rows, keys) {
 function attention(ids) {
   const now = Date.now();
   const out = [];
-  const accs = db.prepare(`SELECT * FROM accounts WHERE ${inScope(ids, 'id')}`).all();
+  const accs = db.prepare(`SELECT * FROM accounts WHERE ${inScope(ids, 'id')} AND archived_at IS NULL`).all();
   for (const a of accs) {
     if (a.suspect_reason) out.push({ type: 'suspect', level: 'critical', account_id: a.id, account: nameOf(a), detail: a.suspect_reason });
     if (a.auth_state === 'expired') out.push({ type: 'auth', level: 'warning', account_id: a.id, account: nameOf(a), detail: 'Cookie hết hạn, cần dán cookie mới' });
@@ -223,9 +223,10 @@ export function overview(q = {}) {
     uptime_today: uptimeRange(ids, today, today),
     devices: { online: dev.online || 0, idle: dev.idle || 0, offline: dev.offline || 0, banned: dev.banned || 0 },
     accounts: {
-      total: accounts.length,
-      running: accounts.filter(a => a.status === 'running').length,
-      stopped: accounts.filter(a => a.status === 'stopped').length,
+      total: accounts.filter(a => !a.archived_at).length,
+      running: accounts.filter(a => a.status === 'running' && !a.archived_at).length,
+      stopped: accounts.filter(a => a.status === 'stopped' && !a.archived_at).length,
+      archived: accounts.filter(a => a.archived_at).length,
       banned: accounts.filter(a => a.status === 'banned').length,
     },
     days, daily: dailyByAccount(ids, from, today, accounts), usage_daily: usageDaily(ids, addDays(uDay, -(days - 1)), uDay),

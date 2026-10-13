@@ -4,7 +4,7 @@ import path from 'node:path';
 import { config, ROOT } from './config.js';
 import { db, getSettings, setSettings, addEvent } from './db.js';
 import { encrypt, verifyPassword, hashPassword, signSession, verifySession } from './crypto.js';
-import { normalizeCookie, EarnAppClient } from './earnapp.js';
+import { normalizeCookie, normalizeProxy, EarnAppClient } from './earnapp.js';
 import { runCycle, startScheduler, syncState, requestSyncAll } from './sync.js';
 import { summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
 import { sendTelegram } from './telegram.js';
@@ -79,7 +79,7 @@ app.get('/api/scope', (req, res) => res.json(scopeOptions()));
 const ACCOUNT_LIST_SQL = `
   SELECT a.id, a.email, a.label, a.note, a.group_name, a.proxy, a.status, a.auth_state, a.last_error,
     a.last_sync_at, a.balance, a.earnings_total, a.joined_at, a.banned_at, a.paused, a.created_at,
-    a.suspect_reason, a.suspect_at, a.backoff_until, a.backoff_level, a.next_sync_at,
+    a.suspect_reason, a.suspect_at, a.backoff_until, a.backoff_level, a.next_sync_at, a.archived_at, a.error_streak,
     COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.account_id = a.id AND t.status = 'paid'), 0) AS withdrawn,
     COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.account_id = a.id AND t.status != 'paid'), 0) AS pending,
     COALESCE((SELECT last_total - first_total FROM account_daily d WHERE d.account_id = a.id AND d.date = ?), 0) AS today,
@@ -116,7 +116,9 @@ app.get('/api/accounts/:id', (req, res) => {
 
 /** Thêm 1 hoặc nhiều acc: mỗi dòng 1 cookie */
 app.post('/api/accounts', async (req, res) => {
-  const { cookies, label = '', note = '', group_name = '', proxy = '' } = req.body || {};
+  const { cookies, label = '', note = '', group_name = '' } = req.body || {};
+  let proxy;
+  try { proxy = normalizeProxy(req.body?.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
   const lines = String(cookies || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   if (!lines.length) return res.status(400).json({ error: 'Chưa nhập cookie' });
   const results = [];
@@ -126,7 +128,7 @@ app.post('/api/accounts', async (req, res) => {
       const user = await new EarnAppClient(cookie, proxy).call('user_data');
       const dup = db.prepare('SELECT id FROM accounts WHERE email = ?').get(user.email);
       if (dup) {
-        db.prepare("UPDATE accounts SET cookie_enc = ?, auth_state = 'pending' WHERE id = ?").run(encrypt(cookie), dup.id);
+        db.prepare("UPDATE accounts SET cookie_enc = ?, auth_state = 'pending', archived_at = NULL, paused = 0 WHERE id = ?").run(encrypt(cookie), dup.id);
         results.push({ ok: true, email: user.email, updated: true, id: dup.id });
         continue;
       }
@@ -149,8 +151,23 @@ app.patch('/api/accounts/:id', async (req, res) => {
   if (!acc) return res.status(404).json({ error: 'Không tìm thấy' });
   const b = req.body || {};
   const fields = {};
-  for (const k of ['label', 'note', 'group_name', 'proxy']) if (k in b) fields[k] = String(b[k] ?? '');
-  if ('paused' in b) fields.paused = b.paused ? 1 : 0;
+  for (const k of ['label', 'note', 'group_name']) if (k in b) fields[k] = String(b[k] ?? '');
+  if ('proxy' in b) {
+    try { fields.proxy = normalizeProxy(b.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  // Acc đã lưu trữ luôn ngừng đồng bộ; muốn chạy lại thì khôi phục
+  if ('paused' in b && !acc.archived_at) fields.paused = b.paused ? 1 : 0;
+  if ('archived' in b) {
+    if (b.archived && !acc.archived_at) {
+      fields.archived_at = Date.now();
+      fields.paused = 1;
+      if (acc.status !== 'banned') fields.status = 'stopped';
+    } else if (!b.archived && acc.archived_at) {
+      fields.archived_at = null;
+      fields.paused = 0;
+      fields.next_sync_at = null; // lấy dữ liệu lại ngay
+    }
+  }
   if (b.dismiss_suspect) { fields.suspect_reason = ''; fields.suspect_ack = 1; }
   // Running/Stopped luôn tự động theo máy. Người dùng chỉ được đánh dấu / bỏ đánh dấu bị khoá.
   if ('banned' in b) {
@@ -179,13 +196,19 @@ app.patch('/api/accounts/:id', async (req, res) => {
   if (Object.keys(fields).length) {
     db.prepare(`UPDATE accounts SET ${Object.keys(fields).map(k => `${k} = @${k}`).join(', ')} WHERE id = @id`).run({ ...fields, id: acc.id });
   }
-  if (fields.status && fields.status !== acc.status) {
+  if ('archived_at' in fields) {
+    // Máy của acc lưu trữ không hiện trong danh sách máy, không bị tính là rớt mạng. Khôi phục thì lần đồng bộ tới tự hiện lại.
+    if (fields.archived_at) db.prepare("UPDATE devices SET missing = 1, online = 0, status = 'offline' WHERE account_id = ?").run(acc.id);
+    addEvent({ account_id: acc.id, type: 'account_archived', level: 'info',
+      message: fields.archived_at ? `${acc.label || acc.email}: đã lưu trữ, ngừng theo dõi (số liệu cũ vẫn giữ)` : `${acc.label || acc.email}: khôi phục từ lưu trữ, theo dõi lại` });
+  }
+  if (fields.status && fields.status !== acc.status && !('archived_at' in fields)) {
     addEvent({ account_id: acc.id, type: 'account_status', level: fields.status === 'banned' ? 'critical' : 'info',
       message: fields.status === 'banned'
         ? `${acc.label || acc.email}: được đánh dấu bị khoá, số dư ${'$' + acc.balance.toFixed(2)} tính vào "Mất do bị khoá"`
         : `${acc.label || acc.email}: bỏ đánh dấu bị khoá, trạng thái tự động trở lại` });
   }
-  if (b.cookie) runCycle([acc.id]).catch(() => {});
+  if (b.cookie || ('archived_at' in fields && !fields.archived_at)) runCycle([acc.id]).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -196,7 +219,11 @@ app.delete('/api/accounts/:id', (req, res) => {
 
 app.post('/api/sync', async (req, res) => {
   const id = req.body?.id ? Number(req.body.id) : null;
-  if (id) { await runCycle([id]); return res.json({ ok: true }); }
+  if (id) {
+    if (db.prepare('SELECT archived_at FROM accounts WHERE id = ?').get(id)?.archived_at) return res.status(400).json({ error: 'Acc đang lưu trữ, khôi phục trước khi lấy dữ liệu' });
+    await runCycle([id]);
+    return res.json({ ok: true });
+  }
   res.json({ ok: true, queued: requestSyncAll() });
 });
 
@@ -254,7 +281,7 @@ app.get('/api/settings', (req, res) => {
 app.put('/api/settings', (req, res) => {
   const b = { ...req.body };
   if (typeof b.telegram_token === 'string' && b.telegram_token.startsWith('••••')) delete b.telegram_token;
-  for (const k of ['sync_min_min', 'sync_max_min', 'account_delay_sec', 'idle_hours', 'offline_grace_min', 'usd_vnd', 'daily_report_hour']) {
+  for (const k of ['sync_min_min', 'sync_max_min', 'account_delay_sec', 'idle_hours', 'offline_grace_min', 'usd_vnd', 'daily_report_hour', 'error_alert_count']) {
     if (k in b) b[k] = Math.max(k === 'daily_report_hour' ? 0 : 1, Number(b[k]) || 0);
   }
   const cur = getSettings();

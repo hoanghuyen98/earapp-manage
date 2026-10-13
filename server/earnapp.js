@@ -1,4 +1,4 @@
-import { ProxyAgent } from 'undici';
+import { ProxyAgent, Socks5ProxyAgent } from 'undici';
 
 const BASE = 'https://earnapp.com/dashboard/api/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
@@ -6,6 +6,8 @@ const KEEP = ['oauth-refresh-token', 'oauth-token', 'auth', 'auth-method', 'xsrf
 
 export class AuthError extends Error {}
 export class BannedError extends Error {}
+/** Không kết nối được (mạng, proxy chết…) */
+export class NetworkError extends Error {}
 /** EarnApp/Cloudflare chặn vì gọi quá nhiều. retryAfter: số giây server yêu cầu chờ (nếu có) */
 export class RateLimitError extends Error {
   constructor(message, retryAfter = 0) { super(message); this.retryAfter = retryAfter; }
@@ -31,12 +33,39 @@ export function normalizeCookie(input) {
   return KEEP.filter(k => parts[k]).map(k => `${k}=${parts[k]}`).join('; ');
 }
 
+/** Proxy hợp lệ: http(s)://… hoặc socks5://… (có thể kèm user:pass@). Trả về chuỗi đã chuẩn hoá, sai thì báo lỗi. */
+export function normalizeProxy(input) {
+  let raw = String(input || '').trim();
+  if (!raw) return '';
+  // Kiểu nhà bán proxy hay đưa: host:port:user:pass (có thể kèm socks5:// phía trước)
+  const m = raw.match(/^((?:[a-z0-9]+:\/\/)?)([^:/@\s]+):(\d+):([^:\s]+):(\S+)$/i);
+  if (m) raw = `${m[1] || 'http://'}${encodeURIComponent(m[4])}:${encodeURIComponent(m[5])}@${m[2]}:${m[3]}`;
+  let url;
+  try { url = new URL(/^[a-z0-9]+:\/\//i.test(raw) ? raw : 'http://' + raw); } catch { throw new Error('Proxy không đúng định dạng'); }
+  // socks5h / socks: undici dùng chung một kiểu SOCKS5
+  if (/^socks(5h?)?:$/.test(url.protocol)) url.protocol = 'socks5:';
+  if (!['http:', 'https:', 'socks5:'].includes(url.protocol)) throw new Error('Proxy chỉ hỗ trợ http://, https:// hoặc socks5://');
+  if (!url.hostname) throw new Error('Proxy thiếu địa chỉ (VD: socks5://user:pass@1.2.3.4:1080)');
+  return url.href.replace(/\/$/, '');
+}
+
 const agents = new Map();
 function dispatcherFor(proxy) {
   if (!proxy) return undefined;
-  if (!agents.has(proxy)) agents.set(proxy, new ProxyAgent(proxy));
+  if (!agents.has(proxy)) {
+    const url = normalizeProxy(proxy);
+    agents.set(proxy, url.startsWith('socks5:') ? new Socks5ProxyAgent(url) : new ProxyAgent(url));
+  }
   return agents.get(proxy);
 }
+
+const NET_ERRORS = {
+  ECONNREFUSED: 'bị từ chối kết nối, proxy có thể đã chết',
+  ECONNRESET: 'kết nối bị ngắt giữa chừng',
+  ENOTFOUND: 'không tìm thấy địa chỉ',
+  EAI_AGAIN: 'lỗi phân giải tên miền',
+  EHOSTUNREACH: 'không tới được máy chủ',
+};
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -60,10 +89,20 @@ export class EarnAppClient {
     if (xsrf) headers['xsrf-token'] = xsrf[1];
     if (body) headers['content-type'] = 'application/json';
 
-    const res = await fetch(url, {
-      method, headers, body: body ? JSON.stringify(body) : undefined,
-      dispatcher: this.dispatcher, signal: AbortSignal.timeout(30000),
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method, headers, body: body ? JSON.stringify(body) : undefined,
+        dispatcher: this.dispatcher, signal: AbortSignal.timeout(30000),
+      });
+    } catch (e) {
+      // "fetch failed" không nói lên gì: lấy lý do thật (proxy chết, sai mật khẩu proxy, hết thời gian…)
+      const code = e.cause?.code || '';
+      const why = e.name === 'TimeoutError' || /TIMEOUT/.test(code) ? 'quá thời gian không phản hồi'
+        : NET_ERRORS[code] ? `${NET_ERRORS[code]} (${code})`
+        : e.cause?.message || e.message;
+      throw new NetworkError(`Không kết nối được EarnApp${this.dispatcher ? ' qua proxy' : ''}: ${why}`);
+    }
     const text = await res.text();
     let data;
     try { data = JSON.parse(text); } catch { data = text; }

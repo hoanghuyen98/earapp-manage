@@ -71,7 +71,14 @@ export async function syncAccount(acc, s = getSettings()) {
       }
       alerts.rateLimited = true;
     } else {
-      db.prepare("UPDATE accounts SET auth_state = 'error', last_error = ?, last_sync_at = ? WHERE id = ?").run(String(e.message).slice(0, 300), now, acc.id);
+      // Lỗi khác (proxy chết, mạng, EarnApp lỗi…): đếm số lần liên tiếp, đủ ngưỡng thì báo 1 lần
+      const streak = (acc.error_streak || 0) + 1;
+      const msg = String(e.message).slice(0, 300);
+      db.prepare("UPDATE accounts SET auth_state = 'error', last_error = ?, last_sync_at = ?, error_streak = ? WHERE id = ?").run(msg, now, streak, acc.id);
+      if (streak === Math.max(1, Number(s.error_alert_count) || 3)) {
+        addEvent({ account_id: acc.id, type: 'sync_error', level: 'critical', message: `${accName(acc)}: lấy dữ liệu lỗi ${streak} lần liên tiếp (${msg})` });
+        if (s.notify_sync_error) alerts.push(A('sync_error', { why: msg, count: streak, proxy: !!acc.proxy }));
+      }
     }
     return alerts;
   }
@@ -112,7 +119,7 @@ export async function syncAccount(acc, s = getSettings()) {
   tx(() => {
     // --- Tài khoản ---
     db.prepare(`UPDATE accounts SET email = ?, joined_at = ?, auth_state = 'ok', last_error = '', last_sync_at = ?,
-        backoff_level = 0, backoff_until = NULL, suspect_ack = 0 WHERE id = ?`)
+        backoff_level = 0, backoff_until = NULL, suspect_ack = 0, error_streak = 0 WHERE id = ?`)
       .run(user.email, user.joined_ts || null, now, acc.id);
     if (!frozen) {
       db.prepare('UPDATE accounts SET balance = ?, earnings_total = ? WHERE id = ?').run(balance, total, acc.id);
@@ -125,6 +132,10 @@ export async function syncAccount(acc, s = getSettings()) {
       if (s.notify_suspect) alerts.push(A('account_suspect', { why, amount: acc.balance }));
     }
     if (acc.auth_state === 'expired') addEvent({ account_id: acc.id, type: 'auth', level: 'good', message: `${accName(acc)}: cookie hoạt động lại` });
+    if (acc.error_streak >= Math.max(1, Number(s.error_alert_count) || 3)) {
+      addEvent({ account_id: acc.id, type: 'sync_error', level: 'good', message: `${accName(acc)}: lấy dữ liệu bình thường trở lại` });
+      if (s.notify_sync_error) alerts.push(A('sync_ok', { count: acc.error_streak }));
+    }
     if (acc.backoff_level >= 3) addEvent({ account_id: acc.id, type: 'rate_limit', level: 'good', message: `${accName(acc)}: hết bị giới hạn, đồng bộ bình thường` });
 
     // --- Lưu số dư theo giờ (luôn lưu khi có bất thường) ---

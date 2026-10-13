@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Pencil, Trash2, KeyRound, Server, Receipt, Bell, AlertTriangle, PauseCircle, ShieldAlert, Hourglass, History, Gauge, Ban, Undo2 } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Pencil, Trash2, KeyRound, Server, Receipt, Bell, AlertTriangle, PauseCircle, ShieldAlert, Hourglass, History, Gauge, Ban, Undo2, Archive, ArchiveRestore } from 'lucide-react';
 import { api, usd, vnd, timeAgo, timeUntil, fmtDate, fmtDateTime, fmtBytes } from '../lib';
 import { Card, CardHeader, Button, PageLoading, Modal, Field, Input, Textarea, Toggle, ConfirmButton, Empty, AccountBadge, useData, useToast, cx } from '../ui';
 import { DailyBars, UsageBars } from '../charts';
@@ -32,14 +32,14 @@ function EditModal({ acc, open, onClose, onSaved }) {
           <Field label="Nhóm"><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} /></Field>
         </div>
         <Field label="Ghi chú"><Textarea rows={2} value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} placeholder="VD: chạy ở VPS số 2, mua ngày 10/10" /></Field>
-        <Field label="Proxy" hint="Để trống nếu không dùng."><Input value={form.proxy} onChange={e => setForm({ ...form, proxy: e.target.value })} placeholder="http://user:pass@host:port" /></Field>
+        <Field label="Proxy" hint="Để trống nếu không dùng. Hỗ trợ http://, https:// và socks5://. Dán dạng host:port:user:pass cũng được."><Input value={form.proxy} onChange={e => setForm({ ...form, proxy: e.target.value })} placeholder="socks5://user:pass@host:port" /></Field>
         <div className="rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
           <Field label="Cập nhật cookie mới" hint="Chỉ điền khi cookie cũ hết hạn hoặc bị lỗi.">
             <Textarea rows={3} value={form.cookie} onChange={e => setForm({ ...form, cookie: e.target.value })} className="font-mono text-xs" placeholder="Dán cookie mới…" />
           </Field>
           <div className="mt-3"><CookieGuide /></div>
         </div>
-        <Toggle checked={form.paused} onChange={v => setForm({ ...form, paused: v })} label="Tạm ngừng theo dõi" hint="Web sẽ không lấy dữ liệu acc này nữa, nhưng số liệu cũ vẫn giữ nguyên." />
+        {!acc.archived_at && <Toggle checked={form.paused} onChange={v => setForm({ ...form, paused: v })} label="Tạm ngừng theo dõi" hint="Web sẽ không lấy dữ liệu acc này nữa, nhưng số liệu cũ vẫn giữ nguyên." />}
       </div>
     </Modal>
   );
@@ -162,6 +162,13 @@ export default function AccountDetail() {
     toast(banned ? `Đã đánh dấu bị khoá, ${usd(a.balance)} được tính vào "Mất do bị khoá"` : 'Đã bỏ đánh dấu, trạng thái tự động trở lại');
     reload();
   };
+  const setArchived = async (archived) => {
+    try {
+      await api(`/accounts/${a.id}`, { method: 'PATCH', body: { archived } });
+      toast(archived ? 'Đã lưu trữ. Số liệu cũ vẫn được tính vào tổng' : 'Đã khôi phục, đang lấy dữ liệu mới');
+      reload();
+    } catch (e) { toast(e.message, 'error'); }
+  };
   const del = async () => {
     await api('/accounts/' + a.id, { method: 'DELETE' });
     toast('Đã xoá tài khoản');
@@ -192,7 +199,7 @@ export default function AccountDetail() {
           {a.note && <p className="mt-2 inline-block rounded-lg bg-amber-50 px-3 py-1.5 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">📝 {a.note}</p>}
         </div>
         <div className="flex shrink-0 gap-2">
-          <Button variant="secondary" icon={RefreshCw} loading={syncing} onClick={sync}>Cập nhật</Button>
+          {!a.archived_at && <Button variant="secondary" icon={RefreshCw} loading={syncing} onClick={sync}>Cập nhật</Button>}
           <Button variant="secondary" icon={Pencil} onClick={() => setEditing(true)}>Sửa</Button>
           {a.status === 'banned' ? (
             <ConfirmButton variant="secondary" icon={Undo2} title="Bỏ đánh dấu bị khoá?" confirmLabel="Bỏ đánh dấu"
@@ -203,7 +210,15 @@ export default function AccountDetail() {
               message={`Chỉ làm khi anh chắc chắn ${a.email} đã bị EarnApp khoá. Số dư hiện tại ${usd(a.balance)} sẽ được giữ lại và tính vào mục "Mất do bị khoá". Đánh dấu nhầm thì bấm "Bỏ đánh dấu khoá" để hoàn tác.`}
               onConfirm={() => setBanned(true)}>Đánh dấu bị khoá</ConfirmButton>
           )}
-          <ConfirmButton variant="secondary" size="icon" icon={Trash2} title="Xoá tài khoản?" message={`Xoá ${a.email} khỏi web? Toàn bộ dữ liệu đã lưu (máy, lịch sử rút, thống kê) của acc này cũng bị xoá. Tài khoản EarnApp thật không bị ảnh hưởng.`} onConfirm={del} />
+          {a.archived_at ? (
+            <Button variant="secondary" icon={ArchiveRestore} onClick={() => setArchived(false)}>Khôi phục</Button>
+          ) : (
+            <ConfirmButton variant="secondary" icon={Archive} title="Lưu trữ tài khoản?" confirmLabel="Lưu trữ"
+              message={`Web ngừng theo dõi ${a.email} và ẩn khỏi danh sách (xem lại ở tab "Lưu trữ"). Lịch sử rút, thu nhập, Lifetime vẫn được giữ và tính vào tổng. Dùng khi bỏ acc hoặc acc đã bị khoá.`}
+              onConfirm={() => setArchived(true)}>Lưu trữ</ConfirmButton>
+          )}
+          <ConfirmButton variant="secondary" size="icon" icon={Trash2} title="Xoá hẳn tài khoản?" confirmLabel="Xoá hẳn"
+            message={`Xoá ${a.email} khỏi web? Toàn bộ dữ liệu đã lưu (máy, lịch sử rút, thu nhập) của acc này bị xoá vĩnh viễn, các con số tổng (Lifetime, Đã rút, Mất do bị khoá, báo cáo lãi lỗ) sẽ giảm theo. Nếu chỉ muốn ngừng theo dõi thì nên bấm "Lưu trữ". Tài khoản EarnApp thật không bị ảnh hưởng.`} onConfirm={del} />
         </div>
       </div>
 
@@ -226,20 +241,25 @@ export default function AccountDetail() {
           <div><b>EarnApp đang giới hạn truy cập.</b> Web tạm ngừng lấy dữ liệu acc này đến {fmtDateTime(a.backoff_until)} rồi tự thử lại.</div>
         </div>
       )}
-      {a.auth_state === 'expired' && (
+      {!a.archived_at && a.auth_state === 'expired' && (
         <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
           <KeyRound className="mt-0.5 size-5 shrink-0" />
           <div className="flex-1"><b>Cookie đã hết hạn.</b> Có thể acc đã bị đăng xuất. Số liệu bên dưới là lần cập nhật cuối.</div>
           <Button size="sm" onClick={() => setEditing(true)}>Cập nhật cookie</Button>
         </div>
       )}
-      {a.auth_state === 'error' && (
+      {!a.archived_at && a.auth_state === 'error' && (
         <div className="mb-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-200">
           <AlertTriangle className="mt-0.5 size-5 shrink-0" />
-          <div><b>Lỗi khi lấy dữ liệu:</b> {a.last_error}</div>
+          <div><b>Lỗi khi lấy dữ liệu{a.error_streak > 1 ? ` (${a.error_streak} lần liên tiếp)` : ''}:</b> {a.last_error}</div>
         </div>
       )}
-      {!!a.paused && (
+      {a.archived_at ? (
+        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-zinc-200 bg-zinc-100 p-4 text-sm dark:border-zinc-800 dark:bg-zinc-800/60">
+          <Archive className="size-5 shrink-0 text-zinc-500" />
+          <div className="flex-1">Đã lưu trữ từ {fmtDateTime(a.archived_at)}. Web không theo dõi acc này nữa, số liệu bên dưới là lần cập nhật cuối.</div>
+        </div>
+      ) : !!a.paused && (
         <div className="mb-4 flex items-center gap-3 rounded-2xl border border-zinc-200 bg-zinc-100 p-4 text-sm dark:border-zinc-800 dark:bg-zinc-800/60">
           <PauseCircle className="size-5 text-zinc-500" /> Đang tạm ngừng theo dõi tài khoản này.
         </div>

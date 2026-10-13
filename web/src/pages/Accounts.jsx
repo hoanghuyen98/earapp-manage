@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Users, Download, KeyRound, PauseCircle, ChevronRight, HelpCircle, CheckCircle2, XCircle, ShieldAlert, Hourglass } from 'lucide-react';
+import { Plus, Users, Download, KeyRound, PauseCircle, ChevronRight, HelpCircle, CheckCircle2, XCircle, ShieldAlert, Hourglass, Archive } from 'lucide-react';
 import { api, usd, timeAgo, fmtBytes, ACCOUNT_STATUS } from '../lib';
 import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Modal, Field, Input, Textarea, Empty, AccountBadge, StatusDot, useData, useToast, cx } from '../ui';
 
@@ -15,6 +15,7 @@ function DeviceCounts({ a }) {
 }
 
 function AuthIcon({ a }) {
+  if (a.archived_at) return <span title="Đã lưu trữ"><Archive className="size-4 text-zinc-400" /></span>;
   if (a.suspect_reason) return <span title={'Nghi bị khoá: ' + a.suspect_reason}><ShieldAlert className="size-4 text-red-500" /></span>;
   if (a.backoff_until > Date.now()) return <span title={a.last_error}><Hourglass className="size-4 text-zinc-400" /></span>;
   if (a.paused) return <span title="Đã tạm ngừng đồng bộ"><PauseCircle className="size-4 text-zinc-400" /></span>;
@@ -80,8 +81,8 @@ function AddAccountModal({ open, onClose, onAdded }) {
             {lines <= 1 && <Field label="Tên gợi nhớ"><Input value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} placeholder="VD: Acc VPS 1" /></Field>}
             <Field label="Nhóm"><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} placeholder="VD: VPS Mỹ" /></Field>
           </div>
-          <Field label="Proxy (không bắt buộc)" hint="Dùng proxy riêng để lấy dữ liệu acc này, tránh EarnApp liên kết các acc qua cùng IP. VD: http://user:pass@1.2.3.4:8080">
-            <Input value={form.proxy} onChange={e => setForm({ ...form, proxy: e.target.value })} placeholder="http://..." />
+          <Field label="Proxy (không bắt buộc)" hint="Dùng proxy riêng để lấy dữ liệu acc này, tránh EarnApp liên kết các acc qua cùng IP. Hỗ trợ http://, https:// và socks5://. Dán dạng host:port:user:pass cũng được.">
+            <Input value={form.proxy} onChange={e => setForm({ ...form, proxy: e.target.value })} placeholder="socks5://user:pass@1.2.3.4:1080" />
           </Field>
           <Field label="Ghi chú"><Input value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} placeholder="VD: chạy ở máy nhà anh Tuấn" /></Field>
         </div>
@@ -105,13 +106,15 @@ export default function Accounts() {
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
     return (data || []).filter(a =>
-      (filter === 'all' || (filter === 'auth' ? ['expired', 'error'].includes(a.auth_state) : filter === 'suspect' ? !!a.suspect_reason : a.status === filter)) &&
+      (filter === 'archived' ? !!a.archived_at : !a.archived_at) &&
+      (filter === 'all' || filter === 'archived' || (filter === 'auth' ? ['expired', 'error'].includes(a.auth_state) : filter === 'suspect' ? !!a.suspect_reason : a.status === filter)) &&
       (!group || a.group_name === group) &&
       (!s || [a.email, a.label, a.note, a.group_name].some(x => x?.toLowerCase().includes(s))));
   }, [data, q, filter, group]);
 
   if (loading && !data) return <PageLoading />;
-  const all = data || [];
+  const archivedCount = (data || []).filter(a => a.archived_at).length;
+  const all = (data || []).filter(a => !a.archived_at);
   const count = k => all.filter(a => a.status === k).length;
   const authCount = all.filter(a => ['expired', 'error'].includes(a.auth_state)).length;
   const suspectCount = all.filter(a => a.suspect_reason).length;
@@ -132,6 +135,7 @@ export default function Accounts() {
           { value: 'banned', label: 'Banned', count: count('banned'), dot: 'bg-bad' },
           ...(suspectCount ? [{ value: 'suspect', label: 'Nghi bị khoá', count: suspectCount, dot: 'bg-bad' }] : []),
           ...(authCount ? [{ value: 'auth', label: 'Cần cookie', count: authCount, dot: 'bg-amber-500' }] : []),
+          ...(archivedCount || filter === 'archived' ? [{ value: 'archived', label: 'Lưu trữ', count: archivedCount }] : []),
         ]} />
         <div className="flex gap-2">
           {groups.length > 0 && (
@@ -146,8 +150,8 @@ export default function Accounts() {
 
       <Card className="overflow-hidden">
         {list.length === 0 ? (
-          <Empty icon={Users} title={all.length ? 'Không có tài khoản phù hợp' : 'Chưa có tài khoản'}>
-            {all.length ? 'Thử đổi bộ lọc hoặc từ khoá.' : <Button className="mt-3" icon={Plus} onClick={() => setAdding(true)}>Thêm tài khoản đầu tiên</Button>}
+          <Empty icon={Users} title={all.length || filter === 'archived' ? 'Không có tài khoản phù hợp' : 'Chưa có tài khoản'}>
+            {all.length || filter === 'archived' ? 'Thử đổi bộ lọc hoặc từ khoá.' : <Button className="mt-3" icon={Plus} onClick={() => setAdding(true)}>Thêm tài khoản đầu tiên</Button>}
           </Empty>
         ) : (
           <>

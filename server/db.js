@@ -163,7 +163,9 @@ addColumn('accounts', 'usage_monthly_at', 'INTEGER'); // lần cuối lấy dung
 addColumn('accounts', 'next_sync_at', 'INTEGER');
 addColumn('device_daily', 'check_n', 'INTEGER NOT NULL DEFAULT 0');  // số lần kiểm tra trong ngày
 addColumn('device_daily', 'online_n', 'INTEGER NOT NULL DEFAULT 0');  // số lần thấy online -> uptime %
-addColumn('accounts', 'empty_status_streak', 'INTEGER NOT NULL DEFAULT 0'); // số lần liên tiếp EarnApp trả trạng thái máy rỗng     // lần lấy dữ liệu tiếp theo (mỗi acc có lịch riêng)
+addColumn('accounts', 'empty_status_streak', 'INTEGER NOT NULL DEFAULT 0'); // số lần liên tiếp EarnApp trả trạng thái máy rỗng
+addColumn('accounts', 'error_streak', 'INTEGER NOT NULL DEFAULT 0');  // số lần lấy dữ liệu lỗi liên tiếp (mạng, proxy…)
+addColumn('accounts', 'archived_at', 'INTEGER');                      // đã lưu trữ: ngừng theo dõi nhưng giữ số liệu
 
 // Bỏ chế độ chỉnh tay Running/Stopped (bản cũ): đưa về tự động theo máy
 {
@@ -193,6 +195,8 @@ const DEFAULT_SETTINGS = {
   notify_payout: true,
   notify_suspect: true,
   notify_rate_limit: true,
+  notify_sync_error: true,
+  error_alert_count: 3,        // lỗi lấy dữ liệu N lần liên tiếp thì báo
   daily_report: true,
   daily_report_hour: 21,
   last_daily_report: '',

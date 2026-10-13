@@ -6,8 +6,8 @@ const BAN_REASON = { earnapp_blacklist: 'IP nằm trong danh sách đen', ip_qua
 const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise' };
 
 // Thứ tự hiển thị: việc nghiêm trọng / cần xử lý lên trước
-const ORDER = ['account_banned', 'account_suspect', 'auth', 'device_banned', 'device_offline', 'device_idle',
-  'rate_limit', 'payout_paid', 'payout_new', 'device_online', 'device_unbanned'];
+const ORDER = ['account_banned', 'account_suspect', 'auth', 'sync_error', 'device_banned', 'device_offline', 'device_idle',
+  'rate_limit', 'payout_paid', 'payout_new', 'sync_ok', 'device_online', 'device_unbanned'];
 
 const LIST_MAX = 10;
 
@@ -53,6 +53,14 @@ export function formatAlerts(list, s) {
           break;
         case 'auth':
           parts.push(`🔑 <b>Cookie hết hạn</b>: web không lấy được dữ liệu acc này nữa.\n👉 Đăng nhập lại EarnApp, lấy cookie mới rồi dán vào web: Tài khoản → Sửa → Cập nhật cookie.`);
+          break;
+        case 'sync_error':
+          parts.push(`⚠️ <b>Không lấy được dữ liệu</b> (lỗi ${first.count} lần liên tiếp): ${esc(first.why)}
+Số liệu trên web đang dừng ở lần cập nhật cuối.
+👉 ${first.proxy ? 'Kiểm tra proxy của acc này còn sống không, hết hạn thì đổi proxy mới trong Tài khoản → Sửa.' : 'Kiểm tra mạng của server, hoặc vào EarnApp xem acc còn đăng nhập được không.'}`);
+          break;
+        case 'sync_ok':
+          parts.push(`✅ <b>Lấy dữ liệu bình thường trở lại</b> sau ${first.count} lần lỗi.`);
           break;
         case 'device_banned':
           parts.push(`🚫 <b>${n} máy bị EarnApp BAN</b>, không kiếm tiền được nữa:\n${deviceLines(g, a => `${esc(a.device)} (${esc(BAN_REASON[a.reason] || a.reason)})`)}\n👉 Thường do IP bị đánh giá xấu. Nên đổi IP/proxy cho máy này.`);
