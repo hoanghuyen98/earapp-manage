@@ -32,7 +32,10 @@ export function formatAlerts(list, s) {
     byAcc.get(a.account_id).push(a);
   }
 
-  const blocks = [`🔔 <b>EarnApp Manager</b> · ${list.length} thông báo · ${now}`];
+  // Cảnh báo bị giữ lại do gửi lỗi trước đó: ghi rõ là gửi trễ để không hiểu nhầm là việc vừa xảy ra
+  const oldest = Math.min(...list.map(a => a.ts || Date.now()));
+  const late = Date.now() - oldest > 5 * 60e3 ? `\n⏱ Gửi trễ do lỗi kết nối Telegram, có cảnh báo từ ${hhmm(oldest)}` : '';
+  const blocks = [`🔔 <b>EarnApp Manager</b> · ${list.length} thông báo · ${now}${late}`];
   for (const items of byAcc.values()) {
     const { label, email } = items[0];
     const head = label && email && label !== email
@@ -55,9 +58,7 @@ export function formatAlerts(list, s) {
           parts.push(`🔑 <b>Cookie hết hạn</b>: web không lấy được dữ liệu acc này nữa.\n👉 Đăng nhập lại EarnApp, lấy cookie mới rồi dán vào web: Tài khoản → Sửa → Cập nhật cookie.`);
           break;
         case 'sync_error':
-          parts.push(`⚠️ <b>Không lấy được dữ liệu</b> (lỗi ${first.count} lần liên tiếp): ${esc(first.why)}
-Số liệu trên web đang dừng ở lần cập nhật cuối.
-👉 ${first.proxy ? 'Kiểm tra proxy của acc này còn sống không, hết hạn thì đổi proxy mới trong Tài khoản → Sửa.' : 'Kiểm tra mạng của server, hoặc vào EarnApp xem acc còn đăng nhập được không.'}`);
+          parts.push(`⚠️ <b>Không lấy được dữ liệu</b> (lỗi ${first.count} lần liên tiếp): ${esc(first.why)}\nSố liệu trên web đang dừng ở lần cập nhật cuối.\n👉 ${first.proxy ? 'Kiểm tra proxy của acc này còn sống không, hết hạn thì đổi proxy mới trong Tài khoản → Sửa.' : 'Kiểm tra mạng của server, hoặc vào EarnApp xem acc còn đăng nhập được không.'}`);
           break;
         case 'sync_ok':
           parts.push(`✅ <b>Lấy dữ liệu bình thường trở lại</b> sau ${first.count} lần lỗi.`);

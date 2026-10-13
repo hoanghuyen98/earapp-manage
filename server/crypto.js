@@ -27,9 +27,9 @@ export function verifyPassword(pw, stored) {
   return crypto.timingSafeEqual(test, Buffer.from(hash, 'hex'));
 }
 
-// Token phiên đăng nhập web: id.expires.hmac
-export function signSession(user, ttlMs = 30 * 864e5) {
-  const body = `${user}.${Date.now() + ttlMs}`;
+// Token phiên đăng nhập web: user.ver.expires.hmac. ver khớp users.session_ver mới hợp lệ (đổi mật khẩu thì tăng ver)
+export function signSession(user, ver = 0, ttlMs = 30 * 864e5) {
+  const body = `${user}.${ver}.${Date.now() + ttlMs}`;
   const mac = crypto.createHmac('sha256', config.secret).update(body).digest('base64url');
   return `${body}.${mac}`;
 }
@@ -40,6 +40,8 @@ export function verifySession(token) {
   const body = token.slice(0, i), mac = token.slice(i + 1);
   const expect = crypto.createHmac('sha256', config.secret).update(body).digest('base64url');
   if (mac.length !== expect.length || !crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(expect))) return null;
-  const [user, exp] = body.split('.');
-  return Number(exp) > Date.now() ? user : null;
+  const parts = body.split('.');
+  if (parts.length < 3) return null; // token kiểu cũ
+  const exp = Number(parts.pop()), ver = Number(parts.pop()), user = parts.join('.');
+  return exp > Date.now() ? { user, ver } : null;
 }

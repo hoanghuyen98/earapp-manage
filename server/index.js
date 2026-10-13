@@ -1,7 +1,9 @@
 import express from 'express';
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { config, ROOT } from './config.js';
+import { config, ROOT, DATA_DIR } from './config.js';
+import { zip } from './zip.js';
 import { db, getSettings, setSettings, addEvent } from './db.js';
 import { encrypt, verifyPassword, hashPassword, signSession, verifySession } from './crypto.js';
 import { normalizeCookie, normalizeProxy, EarnAppClient } from './earnapp.js';
@@ -15,6 +17,8 @@ app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '2mb' }));
 
 const COOKIE = 'eam_session';
+const setSession = (req, res, user) => res.setHeader('Set-Cookie',
+  `${COOKIE}=${signSession(user.username, user.session_ver)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${req.secure ? '; Secure' : ''}`);
 const getToken = req => (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith(COOKIE + '='))?.slice(COOKIE.length + 1);
 
 // ---------- Đăng nhập ----------
@@ -32,7 +36,7 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ error: 'Sai tên đăng nhập hoặc mật khẩu' });
   }
   attempts.delete(ip);
-  res.setHeader('Set-Cookie', `${COOKIE}=${signSession(user.username)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${req.secure ? '; Secure' : ''}`);
+  setSession(req, res, user);
   res.json({ ok: true, username: user.username });
 });
 
@@ -42,9 +46,11 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.use('/api', (req, res, next) => {
-  const user = verifySession(getToken(req));
-  if (!user) return res.status(401).json({ error: 'Chưa đăng nhập' });
-  req.user = user;
+  const s = verifySession(getToken(req));
+  const user = s && db.prepare('SELECT username, session_ver FROM users WHERE username = ?').get(s.user);
+  // Phiên cũ (trước khi đổi mật khẩu / đăng xuất các thiết bị khác) không còn hiệu lực
+  if (!user || user.session_ver !== s.ver) return res.status(401).json({ error: 'Chưa đăng nhập' });
+  req.user = user.username;
   next();
 });
 
@@ -55,7 +61,15 @@ app.post('/api/password', (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(req.user);
   if (!verifyPassword(String(current || ''), user.pw_hash)) return res.status(400).json({ error: 'Mật khẩu hiện tại không đúng' });
   if (String(next || '').length < 6) return res.status(400).json({ error: 'Mật khẩu mới tối thiểu 6 ký tự' });
-  db.prepare('UPDATE users SET pw_hash = ? WHERE username = ?').run(hashPassword(next), req.user);
+  // Đổi mật khẩu: đăng xuất mọi thiết bị khác, phiên hiện tại nhận token mới
+  db.prepare('UPDATE users SET pw_hash = ?, session_ver = session_ver + 1 WHERE username = ?').run(hashPassword(next), req.user);
+  setSession(req, res, db.prepare('SELECT * FROM users WHERE username = ?').get(req.user));
+  res.json({ ok: true });
+});
+
+app.post('/api/logout-others', (req, res) => {
+  db.prepare('UPDATE users SET session_ver = session_ver + 1 WHERE username = ?').run(req.user);
+  setSession(req, res, db.prepare('SELECT * FROM users WHERE username = ?').get(req.user));
   res.json({ ok: true });
 });
 
@@ -341,6 +355,35 @@ app.get('/api/export/:type', (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="earnapp-${req.params.type}-${todayStr()}.csv"`);
   res.send(csv(rows, cols));
+});
+
+// ---------- Sao lưu: file zip gồm database + khoá giải mã cookie ----------
+app.get('/api/backup', (req, res) => {
+  const tmp = path.join(os.tmpdir(), `eam-backup-${Date.now()}.db`);
+  try {
+    // VACUUM INTO tạo bản sao nhất quán kể cả khi web đang ghi dữ liệu
+    db.prepare('VACUUM INTO ?').run(tmp);
+    const files = [{ name: 'earnapp.db', data: fs.readFileSync(tmp) }];
+    const keyFile = path.join(DATA_DIR, 'secret.key');
+    if (!process.env.SECRET_KEY && fs.existsSync(keyFile)) files.push({ name: 'secret.key', data: fs.readFileSync(keyFile) });
+    files.push({ name: 'HUONG-DAN-KHOI-PHUC.txt', data: Buffer.from([
+      'KHÔI PHỤC DỮ LIỆU EARNAPP MANAGER',
+      '',
+      '1. Tắt web (docker compose down, hoặc Ctrl+C nếu chạy npm start).',
+      '2. Trong thư mục data/: xoá earnapp.db-wal và earnapp.db-shm nếu có.',
+      '3. Chép earnapp.db' + (files.length > 1 ? ' và secret.key' : '') + ' từ file zip này vào thư mục data/ (ghi đè).',
+      process.env.SECRET_KEY ? '   Web đang dùng SECRET_KEY trong .env: phải giữ đúng SECRET_KEY cũ, nếu không cookie các acc sẽ không đọc được.' : null,
+      '4. Bật lại web.',
+      '',
+      'LƯU Ý: file này chứa cookie EarnApp' + (files.length > 1 ? ' và khoá để giải mã' : '') + '. Ai có file là truy cập được các acc, cần giữ kín.',
+    ].filter(l => l !== null).join('\r\n'), 'utf8') });
+    const stamp = new Intl.DateTimeFormat('sv-SE', { timeZone: getSettings().timezone, dateStyle: 'short', timeStyle: 'short' }).format(Date.now()).replace(/[: ]/g, '-');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="earnapp-backup-${stamp}.zip"`);
+    res.send(zip(files));
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
 });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy' }));

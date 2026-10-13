@@ -38,7 +38,7 @@ export async function syncAccount(acc, s = getSettings()) {
   const now = Date.now();
   const firstSync = !acc.last_sync_at;
   // Mỗi cảnh báo mang đủ thông tin acc để soạn tin rõ ràng (gom theo acc khi gửi)
-  const A = (type, extra = {}) => ({ type, account_id: acc.id, label: acc.label, email: acc.email, ...extra });
+  const A = (type, extra = {}) => ({ type, ts: now, account_id: acc.id, label: acc.label, email: acc.email, ...extra });
   const client = new EarnAppClient(decrypt(acc.cookie_enc), acc.proxy);
 
   let data;
@@ -316,13 +316,22 @@ function withLock(fn) {
   return r;
 }
 
-const alertQueue = [];
+export const alertQueue = [];
 let directPauseUntil = 0; // IP server bị giới hạn: tạm dừng các acc không dùng proxy tới lúc này
 
-async function flushAlerts(s) {
+const ALERT_QUEUE_MAX = 500;
+
+export async function flushAlerts(s) {
   if (!alertQueue.length) return;
   const list = alertQueue.splice(0);
-  await sendTelegram(formatAlerts(list, s), s).catch(e => console.error('telegram', e.message));
+  try {
+    await sendTelegram(formatAlerts(list, s), s);
+  } catch (e) {
+    // Gửi lỗi (mạng chập chờn, Telegram lỗi): trả lại hàng chờ, phút sau gửi lại. Giữ tối đa 500 cảnh báo mới nhất.
+    console.error('telegram', e.message);
+    alertQueue.unshift(...list);
+    if (alertQueue.length > ALERT_QUEUE_MAX) alertQueue.splice(0, alertQueue.length - ALERT_QUEUE_MAX);
+  }
 }
 
 /** Đồng bộ 1 acc rồi hẹn lần tới */

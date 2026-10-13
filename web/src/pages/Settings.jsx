@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Send, Save, Download, Lock, RefreshCw, Bell, Coins, HelpCircle } from 'lucide-react';
+import { Send, Save, Download, Lock, RefreshCw, Bell, Coins, HelpCircle, DatabaseBackup, LogOut } from 'lucide-react';
 import { api, vnd } from '../lib';
-import { Card, CardHeader, Button, PageHeader, PageLoading, Field, Input, Toggle, useToast } from '../ui';
+import { Card, CardHeader, Button, PageHeader, PageLoading, Field, Input, Toggle, ConfirmButton, useToast } from '../ui';
 
 const NOTIFY = [
   ['notify_offline', 'Máy rớt mạng', 'Báo khi máy offline quá số phút cài bên dưới'],
@@ -58,7 +58,7 @@ export default function Settings() {
   };
   const changePw = async () => {
     if (pw.next !== pw.confirm) return toast('Mật khẩu nhập lại không khớp', 'error');
-    try { await api('/password', { method: 'POST', body: pw }); toast('Đã đổi mật khẩu'); setPw({ current: '', next: '', confirm: '' }); }
+    try { await api('/password', { method: 'POST', body: pw }); toast('Đã đổi mật khẩu. Các thiết bị khác đã bị đăng xuất'); setPw({ current: '', next: '', confirm: '' }); }
     catch (e) { toast(e.message, 'error'); }
   };
 
@@ -149,14 +149,27 @@ export default function Settings() {
           </Card>
 
           <Card>
-            <CardHeader title="Đổi mật khẩu đăng nhập" icon={Lock} />
+            <CardHeader title="Sao lưu" icon={DatabaseBackup} subtitle="Toàn bộ dữ liệu web trong 1 file zip, kèm hướng dẫn khôi phục" />
+            <div className="space-y-3 px-5 pb-5">
+              <a href="/api/backup"><Button variant="secondary" size="sm" icon={Download}>Tải file sao lưu</Button></a>
+              <p className="text-xs text-zinc-500">⚠️ File chứa cookie các acc EarnApp và khoá giải mã. Cất ở nơi an toàn, không gửi cho người khác.</p>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Đổi mật khẩu đăng nhập" icon={Lock} subtitle="Đổi xong, các thiết bị khác đang đăng nhập sẽ bị đăng xuất" />
             <div className="space-y-3 px-5 pb-5">
               <Input type="password" placeholder="Mật khẩu hiện tại" value={pw.current} onChange={e => setPw({ ...pw, current: e.target.value })} autoComplete="current-password" />
               <div className="grid gap-3 sm:grid-cols-2">
                 <Input type="password" placeholder="Mật khẩu mới" value={pw.next} onChange={e => setPw({ ...pw, next: e.target.value })} autoComplete="new-password" />
                 <Input type="password" placeholder="Nhập lại mật khẩu mới" value={pw.confirm} onChange={e => setPw({ ...pw, confirm: e.target.value })} autoComplete="new-password" />
               </div>
-              <Button variant="secondary" onClick={changePw} disabled={!pw.current || !pw.next}>Đổi mật khẩu</Button>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={changePw} disabled={!pw.current || !pw.next}>Đổi mật khẩu</Button>
+                <ConfirmButton variant="secondary" icon={LogOut} title="Đăng xuất các thiết bị khác?" confirmLabel="Đăng xuất"
+                  message="Mọi máy tính, điện thoại khác đang đăng nhập web này sẽ phải đăng nhập lại. Thiết bị bạn đang dùng vẫn giữ đăng nhập."
+                  onConfirm={async () => { await api('/logout-others', { method: 'POST' }); toast('Đã đăng xuất các thiết bị khác'); }}>Đăng xuất các thiết bị khác</ConfirmButton>
+              </div>
             </div>
           </Card>
         </div>

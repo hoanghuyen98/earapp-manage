@@ -304,4 +304,34 @@ assert.equal(normalizeProxy('socks5://1.2.3.4:1080:user:pass'), 'socks5://user:p
 assert.equal(normalizeProxy('socks5h://u:p@host.com:1080'), 'socks5://u:p@host.com:1080');
 assert.throws(() => normalizeProxy('ftp://1.2.3.4:21'), /chỉ hỗ trợ/);
 
+// 24. Telegram lỗi: cảnh báo không mất, lần sau gửi lại (giả lập Telegram, không gửi tin thật)
+const { flushAlerts, alertQueue } = await import('../server/sync.js');
+setSettings({ telegram_token: 'fake', telegram_chat_id: '1' });
+const realFetch = globalThis.fetch;
+const sent = [];
+let tgDown = true;
+globalThis.fetch = async (url, o) => {
+  if (tgDown) throw new TypeError('fetch failed');
+  sent.push(JSON.parse(o.body).text);
+  return new Response('{"ok":true}');
+};
+alertQueue.push({ type: 'device_offline', ts: Date.now() - 20 * 60e3, account_id: 1, email: 'a@test.com', device: 'n1' });
+await flushAlerts(s());
+assert.equal(alertQueue.length, 1, 'gửi lỗi: giữ lại trong hàng chờ');
+alertQueue.push({ type: 'device_banned', ts: Date.now(), account_id: 1, email: 'a@test.com', device: 'n2', reason: 'ip_quality' });
+tgDown = false;
+await flushAlerts(s());
+assert.equal(alertQueue.length, 0);
+assert.equal(sent.length, 1, 'gửi gộp 1 tin');
+assert.ok(sent[0].includes('n1') && sent[0].includes('n2') && sent[0].includes('Gửi trễ'), 'có cả cảnh báo cũ, ghi rõ gửi trễ');
+// Hàng chờ không phình vô hạn khi Telegram lỗi lâu
+tgDown = true;
+for (let i = 0; i < 600; i++) alertQueue.push({ type: 'device_offline', ts: Date.now(), account_id: 1, device: 'x' + i });
+await flushAlerts(s());
+assert.equal(alertQueue.length, 500);
+assert.equal(alertQueue.at(-1).device, 'x599', 'giữ cảnh báo mới nhất');
+alertQueue.length = 0;
+globalThis.fetch = realFetch;
+setSettings({ telegram_token: '', telegram_chat_id: '' });
+
 console.log('✅ Tất cả test đều đạt');

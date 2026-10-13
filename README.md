@@ -20,6 +20,9 @@ Web theo dõi nhiều tài khoản EarnApp: trạng thái máy theo thời gian 
   - Gửi báo cáo tổng kết mỗi tối.
 - **Xuất Excel (CSV)** cho tài khoản, máy và lịch sử rút.
 - **Bảo mật:** web có mật khẩu đăng nhập, cookie EarnApp được mã hoá AES-256 khi lưu.
+  - Đổi mật khẩu thì các thiết bị khác tự bị đăng xuất. Có nút **Đăng xuất các thiết bị khác** trong Cài đặt.
+- **Sao lưu:** Cài đặt → **Tải file sao lưu**: 1 file zip gồm database, khoá giải mã cookie và hướng dẫn khôi phục. Giữ file này kín vì nó truy cập được các acc.
+- **Telegram lỗi không mất cảnh báo:** gửi không được thì web giữ lại và gửi lại ở phút sau, kèm ghi chú gửi trễ.
 
 ## Chạy trên máy (Windows / Linux)
 
