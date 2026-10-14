@@ -42,7 +42,7 @@ export function CookieGuide() {
 }
 
 function AddAccountModal({ open, onClose, onAdded }) {
-  const [form, setForm] = useState({ cookies: '', label: '', group_name: '', proxy: '', note: '' });
+  const [form, setForm] = useState({ cookies: '', group_name: '', proxy: '', note: '' });
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState(null);
   const lines = form.cookies.split('\n').filter(l => l.trim()).length;
@@ -55,7 +55,7 @@ function AddAccountModal({ open, onClose, onAdded }) {
       if (r.results.some(x => x.ok)) onAdded();
     } catch (e) { setResults([{ ok: false, error: e.message }]); } finally { setLoading(false); }
   };
-  const close = () => { setResults(null); setForm({ cookies: '', label: '', group_name: '', proxy: '', note: '' }); onClose(); };
+  const close = () => { setResults(null); setForm({ cookies: '', group_name: '', proxy: '', note: '' }); onClose(); };
 
   return (
     <Modal open={open} onClose={close} wide title="Thêm tài khoản" subtitle="Dán cookie của tài khoản EarnApp. Thêm nhiều acc cùng lúc: mỗi dòng 1 cookie."
@@ -77,10 +77,7 @@ function AddAccountModal({ open, onClose, onAdded }) {
           <Field label="Cookie" hint="Dán cả chuỗi cookie, hoặc chỉ giá trị oauth-refresh-token.">
             <Textarea rows={4} value={form.cookies} onChange={e => setForm({ ...form, cookies: e.target.value })} placeholder="oauth-refresh-token=1%2F%2F0...; auth=1; ..." className="font-mono text-xs" />
           </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {lines <= 1 && <Field label="Tên gợi nhớ"><Input value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} placeholder="VD: Acc VPS 1" /></Field>}
-            <Field label="Nhóm"><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} placeholder="VD: VPS Mỹ" /></Field>
-          </div>
+          <Field label="Nhóm" hint="Tên acc tự lấy theo email đăng ký EarnApp."><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} placeholder="VD: VPS Mỹ" /></Field>
           <Field label="Proxy (không bắt buộc)" hint="Dùng proxy riêng để lấy dữ liệu acc này, tránh EarnApp liên kết các acc qua cùng IP. Hỗ trợ http://, https:// và socks5://. Dán dạng host:port:user:pass cũng được.">
             <Input value={form.proxy} onChange={e => setForm({ ...form, proxy: e.target.value })} placeholder="socks5://user:pass@1.2.3.4:1080" />
           </Field>
@@ -181,7 +178,7 @@ export default function Accounts() {
                           <AuthIcon a={a} />
                         </div>
                         <div className="truncate text-xs text-zinc-500">
-                          {a.label ? a.email : ''}{a.group_name && <span className="ml-1 rounded bg-zinc-100 px-1.5 py-px dark:bg-zinc-800">{a.group_name}</span>}
+                          {a.group_name && <span className="ml-1 rounded bg-zinc-100 px-1.5 py-px dark:bg-zinc-800">{a.group_name}</span>}
                           {a.note && <span className="ml-1">· {a.note}</span>}
                         </div>
                       </td>

@@ -200,6 +200,9 @@ addColumn('accounts', 'archived_at', 'INTEGER');
 addColumn('accounts', 'redeem_details', 'TEXT'); // Auto-redeem cài trên EarnApp: JSON {email, payment_method}, '' = chưa cài, NULL = chưa biết
 addColumn('users', 'session_ver', 'INTEGER NOT NULL DEFAULT 0'); // tăng lên thì mọi phiên đăng nhập cũ hết hiệu lực                      // đã lưu trữ: ngừng theo dõi nhưng giữ số liệu
 
+// Tên acc luôn là email đăng ký lấy từ EarnApp: bỏ tên tự đặt của bản cũ
+db.exec('UPDATE accounts SET label = NULL WHERE label IS NOT NULL');
+
 // Bỏ chế độ chỉnh tay Running/Stopped (bản cũ): đưa về tự động theo máy
 {
   const manual = db.prepare("SELECT id FROM accounts WHERE status_mode = 'manual' AND status != 'banned'").all();

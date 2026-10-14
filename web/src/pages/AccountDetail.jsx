@@ -11,7 +11,7 @@ import { CookieGuide } from './Accounts';
 
 function EditModal({ acc, open, onClose, onSaved }) {
   const toast = useToast();
-  const [form, setForm] = useState({ label: acc.label || '', group_name: acc.group_name || '', note: acc.note || '', proxy: acc.proxy || '', paused: !!acc.paused, cookie: '' });
+  const [form, setForm] = useState({ group_name: acc.group_name || '', note: acc.note || '', proxy: acc.proxy || '', paused: !!acc.paused, cookie: '' });
   const [loading, setLoading] = useState(false);
   const save = async () => {
     setLoading(true);
@@ -27,10 +27,7 @@ function EditModal({ acc, open, onClose, onSaved }) {
     <Modal open={open} onClose={onClose} wide title="Sửa tài khoản" subtitle={acc.email}
       footer={<><Button variant="secondary" onClick={onClose}>Huỷ</Button><Button loading={loading} onClick={save}>Lưu</Button></>}>
       <div className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Tên gợi nhớ"><Input value={form.label} onChange={e => setForm({ ...form, label: e.target.value })} placeholder={acc.email} /></Field>
-          <Field label="Nhóm"><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} /></Field>
-        </div>
+        <Field label="Nhóm"><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} /></Field>
         <Field label="Ghi chú"><Textarea rows={2} value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} placeholder="VD: chạy ở VPS số 2, mua ngày 10/10" /></Field>
         <Field label="Proxy" hint="Để trống nếu không dùng. Hỗ trợ http://, https:// và socks5://. Dán dạng host:port:user:pass cũng được."><Input value={form.proxy} onChange={e => setForm({ ...form, proxy: e.target.value })} placeholder="socks5://user:pass@host:port" /></Field>
         <div className="rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
@@ -192,7 +189,6 @@ export default function AccountDetail() {
             <AccountBadge status={a.status} />
           </div>
           <p className="mt-1 text-sm text-zinc-500">
-            {a.label && <>{a.email} · </>}
             {a.group_name && <>Nhóm {a.group_name} · </>}
             Tham gia {fmtDate(a.joined_at)} · Cập nhật {timeAgo(a.last_sync_at)}{!a.paused && a.next_sync_at ? <> · lần tới {timeUntil(a.next_sync_at)}</> : null}
           </p>

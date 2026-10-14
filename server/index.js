@@ -131,7 +131,7 @@ app.get('/api/accounts/:id', (req, res) => {
 
 /** Thêm 1 hoặc nhiều acc: mỗi dòng 1 cookie */
 app.post('/api/accounts', async (req, res) => {
-  const { cookies, label = '', note = '', group_name = '' } = req.body || {};
+  const { cookies, note = '', group_name = '' } = req.body || {};
   let proxy;
   try { proxy = normalizeProxy(req.body?.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
   const lines = String(cookies || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -147,8 +147,9 @@ app.post('/api/accounts', async (req, res) => {
         results.push({ ok: true, email: user.email, updated: true, id: dup.id });
         continue;
       }
-      const r = db.prepare('INSERT INTO accounts(email, label, note, group_name, cookie_enc, proxy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(user.email, lines.length === 1 ? label : '', note, group_name, encrypt(cookie), proxy, Date.now());
+      // Tên acc = email đăng ký trên EarnApp, không cho tự đặt
+      const r = db.prepare('INSERT INTO accounts(email, note, group_name, cookie_enc, proxy, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(user.email, note, group_name, encrypt(cookie), proxy, Date.now());
       addEvent({ account_id: Number(r.lastInsertRowid), type: 'account_added', message: `Đã thêm acc ${user.email}` });
       results.push({ ok: true, email: user.email, id: Number(r.lastInsertRowid) });
     } catch (e) {
@@ -166,7 +167,7 @@ app.patch('/api/accounts/:id', async (req, res) => {
   if (!acc) return res.status(404).json({ error: 'Không tìm thấy' });
   const b = req.body || {};
   const fields = {};
-  for (const k of ['label', 'note', 'group_name']) if (k in b) fields[k] = String(b[k] ?? '');
+  for (const k of ['note', 'group_name']) if (k in b) fields[k] = String(b[k] ?? '');
   if ('proxy' in b) {
     try { fields.proxy = normalizeProxy(b.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
   }
