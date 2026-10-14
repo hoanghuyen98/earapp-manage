@@ -489,7 +489,12 @@ if (fs.existsSync(dist)) {
   app.get(/^(?!\/api).*/, (req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-app.listen(config.port, () => {
+app.listen(config.port, err => {
+  // Cổng đã có web khác chạy: thoát hẳn. Nếu vẫn chạy lịch đồng bộ thì 2 web cùng gọi EarnApp và gửi trùng tin Telegram
+  if (err) {
+    console.error(err.code === 'EADDRINUSE' ? `Cổng ${config.port} đang có web khác chạy. Tắt web cũ trước rồi chạy lại.` : err);
+    process.exit(1);
+  }
   console.log(`EarnApp Manager chạy tại http://localhost:${config.port}`);
   startScheduler();
   startWithdrawScheduler();
