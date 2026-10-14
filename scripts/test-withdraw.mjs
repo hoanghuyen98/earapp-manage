@@ -189,18 +189,18 @@ fake = syncData(null);
 rdAlerts = (await syncAccount(acc1())).filter(a => a.type === 'redeem_details_changed');
 assert.equal(rdAlerts[0].new, null, 'tắt auto-redeem cũng báo');
 const rdMsg = formatAlerts([{ ...rdAlerts[0], old: { email: 'a@b.c', payment_method: 'paypal.com' }, new: { email: 'thief@evil.com', payment_method: 'paypal.com' }, foreign: true }], { timezone: TZ, usd_vnd: 26000 });
-assert.match(rdMsg, /vừa bị thay đổi/);
-assert.match(rdMsg, /KHÔNG nằm trong danh sách/);
+assert.match(rdMsg, /Email nhận tiền trên EarnApp bị đổi/);
+assert.match(rdMsg, /KHÔNG phải email của acc/);
 
 // Thay đổi lịch -> báo Telegram (luôn báo)
 notifyChange([1], 'lưu lịch rút hằng tuần 15:00 T5', '1.2.3.4');
 assert.ok(sent.some(a => a.type === 'withdraw_changed' && a.ip === '1.2.3.4'));
-assert.match(formatAlerts(sent.filter(a => a.type === 'withdraw_changed'), { timezone: TZ }), /Lịch rút tiền thay đổi[\s\S]*1\.2\.3\.4/);
+assert.match(formatAlerts(sent.filter(a => a.type === 'withdraw_changed'), { timezone: TZ }), /Lịch rút tiền vừa thay đổi[\s\S]*1\.2\.3\.4/);
 
 // Tin Telegram
 const msg = formatAlerts(sent.filter(a => a.type.startsWith('withdraw_')), { timezone: TZ, usd_vnd: 26000 });
-assert.match(msg, /Đã tạo lệnh rút<\/b>: \$12\.50/);
-assert.match(msg, /Chưa rút được/);
+assert.match(msg, /Đã gửi lệnh rút \$12\.50<\/b>/);
+assert.match(msg, /Bỏ qua lần rút/);
 assert.match(msg, /THẤT BẠI/);
 
 console.log('✓ test-withdraw: tất cả đều đúng');

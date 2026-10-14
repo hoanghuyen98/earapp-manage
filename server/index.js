@@ -8,7 +8,7 @@ import { db, getSettings, setSettings, addEvent } from './db.js';
 import { encrypt, verifyPassword, hashPassword, signSession, verifySession } from './crypto.js';
 import { normalizeCookie, normalizeProxy, EarnAppClient } from './earnapp.js';
 import { runCycle, startScheduler, syncState, requestSyncAll } from './sync.js';
-import { summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
+import { staleMs, summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
 import { sendTelegram } from './telegram.js';
 import { overview, report, scopeOptions } from './reports.js';
 import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, notifyChange, recomputeSchedules, startWithdrawScheduler } from './withdraw.js';
@@ -94,7 +94,7 @@ app.get('/api/scope', (req, res) => res.json(scopeOptions()));
 const ACCOUNT_LIST_SQL = `
   SELECT a.id, a.email, a.label, a.note, a.group_name, a.proxy, a.status, a.auth_state, a.last_error,
     a.last_sync_at, a.balance, a.earnings_total, a.joined_at, a.banned_at, a.paused, a.created_at,
-    a.suspect_reason, a.suspect_at, a.backoff_until, a.backoff_level, a.next_sync_at, a.archived_at, a.error_streak,
+    a.suspect_reason, a.suspect_at, a.backoff_until, a.backoff_level, a.next_sync_at, a.archived_at, a.error_streak, a.last_ok_at,
     COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.account_id = a.id AND t.status = 'paid'), 0) AS withdrawn,
     COALESCE((SELECT SUM(amount) FROM transactions t WHERE t.account_id = a.id AND t.status != 'paid'), 0) AS pending,
     COALESCE((SELECT last_total - first_total FROM account_daily d WHERE d.account_id = a.id AND d.date = ?), 0) AS today,
@@ -102,16 +102,20 @@ const ACCOUNT_LIST_SQL = `
     (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status = 'online') AS dev_online,
     (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status = 'idle') AS dev_idle,
     (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status = 'offline') AS dev_offline,
-    (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status = 'banned') AS dev_banned
+    (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status = 'banned') AS dev_banned,
+    (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status = 'unknown') AS dev_unknown
   FROM accounts a`;
 const todayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: getSettings().timezone }).format(Date.now());
 
+// stale: quá lâu không lấy được dữ liệu mới, số liệu đang hiện là của lần thành công cuối (last_ok_at)
+const withStale = a => a && ({ ...a, stale: !a.archived_at && !a.paused && (a.last_ok_at || 0) < Date.now() - staleMs() });
+
 app.get('/api/accounts', (req, res) => {
-  res.json(db.prepare(ACCOUNT_LIST_SQL + ' ORDER BY a.id').all(todayStr(), usageToday()));
+  res.json(db.prepare(ACCOUNT_LIST_SQL + ' ORDER BY a.id').all(todayStr(), usageToday()).map(withStale));
 });
 
 app.get('/api/accounts/:id', (req, res) => {
-  const acc = db.prepare(ACCOUNT_LIST_SQL + ' WHERE a.id = ?').get(todayStr(), usageToday(), req.params.id);
+  const acc = withStale(db.prepare(ACCOUNT_LIST_SQL + ' WHERE a.id = ?').get(todayStr(), usageToday(), req.params.id));
   if (!acc) return res.status(404).json({ error: 'Không tìm thấy' });
   res.json({
     ...acc,
@@ -329,7 +333,7 @@ app.post('/api/withdraw/:id/run', async (req, res) => {
 // ---------- Máy, giao dịch, sự kiện ----------
 app.get('/api/devices', (req, res) => {
   res.json(db.prepare(`
-    SELECT d.*, COALESCE(a.label, a.email) AS account,
+    SELECT d.*, COALESCE(a.label, a.email) AS account, a.last_ok_at,
       COALESCE((SELECT last_total - first_total FROM device_daily dd WHERE dd.uuid = d.uuid AND dd.date = ?), 0) AS today,
       COALESCE((SELECT bytes FROM device_usage u WHERE u.uuid = d.uuid AND u.date = ?), 0) AS usage_today
     FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.missing = 0 ORDER BY a.id, d.title`).all(todayStr(), usageToday()));

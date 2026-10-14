@@ -7,6 +7,7 @@ import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Empty, Device
 const BAN_REASON = { earnapp_blacklist: 'IP nằm trong danh sách đen', ip_quality: 'IP chất lượng kém' };
 
 function statusDetail(d) {
+  if (d.status === 'unknown') return `Dữ liệu cũ, cập nhật lần cuối ${timeAgo(d.updated_at)}`;
   if (d.status === 'banned') return BAN_REASON[d.banned_reason] || d.banned_reason;
   if (d.status === 'online' || d.status === 'idle') return d.online_since ? `Online ${duration(Date.now() - d.online_since)}` : 'Online';
   return d.last_online_at ? `Thấy lần cuối ${timeAgo(d.last_online_at)}` : 'Chưa từng online';

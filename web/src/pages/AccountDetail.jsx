@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, Pencil, Trash2, KeyRound, Server, Receipt, Bell, AlertTriangle, PauseCircle, ShieldAlert, Hourglass, History, Gauge, Ban, Undo2, Archive, ArchiveRestore } from 'lucide-react';
-import { api, usd, vnd, timeAgo, timeUntil, fmtDate, fmtDateTime, fmtBytes } from '../lib';
-import { Card, CardHeader, Button, PageLoading, Modal, Field, Input, Textarea, Toggle, ConfirmButton, Empty, AccountBadge, useData, useToast, cx } from '../ui';
+import { api, usd, vnd, timeAgo, timeUntil, fmtDate, fmtDateTime, fmtBytes, explainError } from '../lib';
+import { Card, CardHeader, Button, PageLoading, Modal, Field, Input, Textarea, Toggle, ConfirmButton, Empty, useData, useToast, cx } from '../ui';
 import { DailyBars, UsageBars } from '../charts';
 import { DeviceTable, StatusLegend } from './Devices';
 import { TxTable } from './Payouts';
 import { EventList } from './Dashboard';
-import { CookieGuide } from './Accounts';
+import { CookieGuide, AccountState } from './Accounts';
 
 function EditModal({ acc, open, onClose, onSaved }) {
   const toast = useToast();
@@ -186,11 +186,11 @@ export default function AccountDetail() {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="truncate text-2xl font-semibold tracking-tight">{a.label || a.email}</h1>
-            <AccountBadge status={a.status} />
+            <AccountState a={a} />
           </div>
           <p className="mt-1 text-sm text-zinc-500">
             {a.group_name && <>Nhóm {a.group_name} · </>}
-            Tham gia {fmtDate(a.joined_at)} · Cập nhật {timeAgo(a.last_sync_at)}{!a.paused && a.next_sync_at ? <> · lần tới {timeUntil(a.next_sync_at)}</> : null}
+            Tham gia {fmtDate(a.joined_at)} · Cập nhật {timeAgo(a.last_ok_at || a.last_sync_at)}{!a.paused && a.next_sync_at ? <> · lần tới {timeUntil(a.next_sync_at)}</> : null}
           </p>
           {a.note && <p className="mt-2 inline-block rounded-lg bg-amber-50 px-3 py-1.5 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">📝 {a.note}</p>}
         </div>
@@ -247,7 +247,11 @@ export default function AccountDetail() {
       {!a.archived_at && a.auth_state === 'error' && (
         <div className="mb-4 flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-200">
           <AlertTriangle className="mt-0.5 size-5 shrink-0" />
-          <div><b>Lỗi khi lấy dữ liệu{a.error_streak > 1 ? ` (${a.error_streak} lần liên tiếp)` : ''}:</b> {a.last_error}</div>
+          <div>
+            <b>{a.stale ? `Không lấy được dữ liệu mới từ ${fmtDateTime(a.last_ok_at)}` : 'Lỗi khi lấy dữ liệu'}{a.error_streak > 1 ? ` (lỗi ${a.error_streak} lần liên tiếp)` : ''}</b>
+            {a.stale && <div className="mt-0.5">Số dư, thu nhập và trạng thái máy bên dưới là số liệu của lúc đó. Máy hiện "Chưa rõ" cho tới khi lấy lại được.</div>}
+            <div className="mt-0.5">{explainError(a.last_error)}</div>
+          </div>
         </div>
       )}
       {a.archived_at ? (
@@ -279,7 +283,7 @@ export default function AccountDetail() {
       <UsageCard daily={a.usage_daily} monthly={a.usage_monthly} view={usageView} setView={setUsageView} />
 
       <Card className="mt-4 overflow-hidden">
-        <CardHeader title="Máy (Node)" icon={Server} subtitle={`${a.dev_online} đang chạy · ${a.dev_idle} không ra tiền · ${a.dev_offline} rớt · ${a.dev_banned} bị ban`} />
+        <CardHeader title="Máy (Node)" icon={Server} subtitle={[[a.dev_online, 'đang chạy'], [a.dev_idle, 'không ra tiền'], [a.dev_offline, 'rớt'], [a.dev_banned, 'bị ban'], [a.dev_unknown, 'chưa rõ']].filter(([n]) => n > 0).map(([n, l]) => `${n} ${l}`).join(' · ') || 'Chưa có máy'} />
         <DeviceTable devices={devices} />
         <div className="border-t border-zinc-100 px-5 py-3 dark:border-zinc-800"><StatusLegend /></div>
       </Card>

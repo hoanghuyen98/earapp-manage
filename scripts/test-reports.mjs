@@ -15,8 +15,8 @@ const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${
 
 // 3 acc: A, B (nhóm VPS), C (nhóm Nhà, bị khoá)
 const addAcc = (email, label, group, status, balance, total) => Number(db.prepare(
-  `INSERT INTO accounts(email, label, group_name, status, balance, earnings_total, cookie_enc, created_at, auth_state) VALUES (?, ?, ?, ?, ?, ?, 'x', ?, 'ok')`)
-  .run(email, label, group, status, balance, total, Date.now()).lastInsertRowid);
+  `INSERT INTO accounts(email, label, group_name, status, balance, earnings_total, cookie_enc, created_at, auth_state, last_ok_at) VALUES (?, ?, ?, ?, ?, ?, 'x', ?, 'ok', ?)`)
+  .run(email, label, group, status, balance, total, Date.now(), Date.now()).lastInsertRowid);
 const A = addAcc('a@x.com', 'Acc A', 'VPS', 'running', 3, 30);
 const B = addAcc('b@x.com', null, 'VPS', 'stopped', 1, 10);
 const C = addAcc('c@x.com', 'Acc C', 'Nhà', 'banned', 2, 5);
@@ -70,7 +70,7 @@ near(o.rate_per_hour, 0.1, 1e-3);
 assert.ok(o.forecast_today >= o.today, 'dự báo hôm nay >= đã kiếm');
 assert.ok(o.forecast_month > o.month, 'dự báo tháng > đã kiếm');
 near(o.uptime_today, 25 / 30, 1e-9);
-assert.deepEqual(o.devices, { online: 1, idle: 1, offline: 1, banned: 1 });
+assert.deepEqual(o.devices, { online: 1, idle: 1, offline: 1, banned: 1, unknown: 0 });
 assert.equal(o.rows.length, 3);
 assert.equal(o.rows.find(r => r.id === B).name, 'b@x.com', 'không có tên thì dùng email');
 near(o.rows.find(r => r.id === A).d7, 7);

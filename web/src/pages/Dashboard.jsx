@@ -4,8 +4,9 @@ import {
   TrendingUp, Wallet, ArrowDownToLine, Ban, RefreshCw, CalendarDays, Activity, Bell, Users, ChevronRight,
   ShieldAlert, Hourglass, Gauge, Zap, KeyRound, WifiOff, CircleSlash, CheckCircle2, AlertTriangle, Signal, Layers,
 } from 'lucide-react';
-import { api, usd, vnd, timeAgo, fmtBytes, DEVICE_STATUS } from '../lib';
-import { Card, CardHeader, Button, PageHeader, PageLoading, StatusDot, Empty, AccountBadge, useData, useToast, cx } from '../ui';
+import { api, usd, vnd, timeAgo, fmtBytes, fmtDateTime, DEVICE_STATUS } from '../lib';
+import { AccountState } from './Accounts';
+import { Card, CardHeader, Button, PageHeader, PageLoading, StatusDot, Empty, useData, useToast, cx } from '../ui';
 import { DailyBars, UsageBars, StackedDaily, SeriesLegend } from '../charts';
 import { useScope, ScopeFilter, SortTable, Delta, Uptime, SegTabs, pct } from '../components';
 
@@ -33,7 +34,7 @@ export function KpiCard({ label, sub, value, rate, icon: Icon, tone, extra }) {
 }
 
 export function DeviceBar({ devices }) {
-  const order = ['online', 'idle', 'offline', 'banned'];
+  const order = ['online', 'idle', 'offline', 'banned', ...(devices.unknown ? ['unknown'] : [])];
   const total = order.reduce((s, k) => s + (devices[k] || 0), 0);
   return (
     <div>
@@ -148,7 +149,7 @@ function Stat({ icon: Icon, label, value, sub, right }) {
 }
 
 function DeviceDots({ r }) {
-  const items = [['online', r.dev_online], ['idle', r.dev_idle], ['offline', r.dev_offline], ['banned', r.dev_banned]].filter(([, n]) => n > 0);
+  const items = [['online', r.dev_online], ['idle', r.dev_idle], ['offline', r.dev_offline], ['banned', r.dev_banned], ['unknown', r.dev_unknown]].filter(([, n]) => n > 0);
   if (!items.length) return <span className="text-xs text-zinc-400">Chưa có máy</span>;
   return <div className="flex items-center gap-2.5">{items.map(([k, n]) => <span key={k} className="inline-flex items-center gap-1 tabular"><StatusDot status={k} size="sm" />{n}</span>)}</div>;
 }
@@ -199,7 +200,7 @@ export default function Dashboard() {
         <div className="truncate text-xs text-zinc-500">{r.name !== r.email ? r.email : ''}{r.group && <span className="ml-1 rounded bg-zinc-100 px-1.5 py-px dark:bg-zinc-800">{r.group}</span>}</div>
       </div>
     ) },
-    { key: 'status', label: 'Trạng thái', hide: 'sm', render: r => <AccountBadge status={r.status} /> },
+    { key: 'status', label: 'Trạng thái', hide: 'sm', render: r => <AccountState a={r} /> },
     { key: 'dev_online', label: 'Máy', sort: r => r.dev_online + r.dev_idle, render: r => <DeviceDots r={r} /> },
     { key: 'today', label: 'Hôm nay', align: 'right', render: r => usd(r.today, 3) },
     { key: 'd7', label: '7 ngày', align: 'right', hide: 'md', render: r => usd(r.d7, 2) },
@@ -231,6 +232,16 @@ export default function Dashboard() {
         <ScopeFilter scope={scope} />
         <Button variant="secondary" icon={RefreshCw} loading={syncing} onClick={syncAll}>Đồng bộ ngay</Button>
       </PageHeader>
+
+      {d.stale > 0 && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+          <AlertTriangle className="mt-0.5 size-5 shrink-0" />
+          <div>
+            <b>{d.stale}/{d.accounts.total} acc không lấy được dữ liệu mới{d.stale_since ? ` từ ${fmtDateTime(d.stale_since)}` : ''}.</b>
+            <div className="mt-0.5">Số liệu của các acc này đang là của lúc đó, máy hiện "Chưa rõ". Xem lý do ở mục Cần xử lý bên dưới.</div>
+          </div>
+        </div>
+      )}
 
       {d.accounts.total === 0 && d.scope.all && (
         <Card className="mb-6 flex flex-col items-start gap-3 border-dashed p-6 sm:flex-row sm:items-center sm:justify-between">
@@ -288,7 +299,7 @@ export default function Dashboard() {
 
         <div className="flex flex-col gap-4">
           <Card>
-            <CardHeader title="Trạng thái máy" subtitle={`${d.devices.online + d.devices.idle + d.devices.offline + d.devices.banned} máy`} action={<Link to="/devices" className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400">Xem tất cả</Link>} />
+            <CardHeader title="Trạng thái máy" subtitle={`${d.devices.online + d.devices.idle + d.devices.offline + d.devices.banned + (d.devices.unknown || 0)} máy`} action={<Link to="/devices" className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400">Xem tất cả</Link>} />
             <div className="px-5 pb-5"><DeviceBar devices={d.devices} /></div>
           </Card>
           <Card>

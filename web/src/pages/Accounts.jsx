@@ -1,11 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Users, Download, KeyRound, PauseCircle, ChevronRight, HelpCircle, CheckCircle2, XCircle, ShieldAlert, Hourglass, Archive } from 'lucide-react';
-import { api, usd, timeAgo, fmtBytes, ACCOUNT_STATUS } from '../lib';
-import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Modal, Field, Input, Textarea, Empty, AccountBadge, StatusDot, useData, useToast, cx } from '../ui';
+import { api, usd, timeAgo, fmtBytes, fmtDateTime, explainError } from '../lib';
+import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Modal, Field, Input, Textarea, Empty, AccountBadge, StatusDot, Badge, useData, useToast, cx } from '../ui';
+
+/** Acc lâu không lấy được dữ liệu: không hiện Running/Stopped cũ mà ghi "Chưa rõ" */
+export function AccountState({ a }) {
+  if (a.stale && a.status !== 'banned') {
+    return <span title={`Không lấy được dữ liệu mới từ ${fmtDateTime(a.last_ok_at)}. ${explainError(a.last_error)}`}>
+      <Badge className="bg-zinc-100 text-zinc-600 ring-zinc-500/20 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-zinc-700">Chưa rõ</Badge>
+    </span>;
+  }
+  return <AccountBadge status={a.status} />;
+}
+
+/** "5 phút trước", hoặc đỏ "Dữ liệu cũ từ ..." khi lâu không lấy được */
+export function UpdatedAt({ a }) {
+  if (a.stale) return <span className="text-red-600 dark:text-red-400" title={explainError(a.last_error)}>Dữ liệu cũ từ {a.last_ok_at ? fmtDateTime(a.last_ok_at) : '—'}</span>;
+  return timeAgo(a.last_ok_at || a.last_sync_at);
+}
 
 function DeviceCounts({ a }) {
-  const items = [['online', a.dev_online], ['idle', a.dev_idle], ['offline', a.dev_offline], ['banned', a.dev_banned]].filter(([, n]) => n > 0);
+  const items = [['online', a.dev_online], ['idle', a.dev_idle], ['offline', a.dev_offline], ['banned', a.dev_banned], ['unknown', a.dev_unknown]].filter(([, n]) => n > 0);
   if (!items.length) return <span className="text-xs text-zinc-400">Chưa có máy</span>;
   return (
     <div className="flex items-center gap-2.5">
@@ -182,14 +198,14 @@ export default function Accounts() {
                           {a.note && <span className="ml-1">· {a.note}</span>}
                         </div>
                       </td>
-                      <td className="px-3 py-3.5"><AccountBadge status={a.status} /></td>
+                      <td className="px-3 py-3.5"><AccountState a={a} /></td>
                       <td className="px-3 py-3.5"><DeviceCounts a={a} /></td>
                       <td className="px-3 py-3.5 text-right tabular">{usd(a.today, 3)}</td>
                       <td className="px-3 py-3.5 text-right text-zinc-600 tabular dark:text-zinc-300">{fmtBytes(a.usage_today)}</td>
                       <td className="px-3 py-3.5 text-right font-medium tabular">{usd(a.balance)}</td>
                       <td className="px-3 py-3.5 text-right tabular">{usd(a.withdrawn)}{a.pending > 0 && <div className="text-xs text-amber-600">+{usd(a.pending)} chờ</div>}</td>
                       <td className="px-3 py-3.5 text-right tabular">{usd(a.earnings_total)}</td>
-                      <td className="px-3 py-3.5 text-xs text-zinc-500 whitespace-nowrap">{timeAgo(a.last_sync_at)}</td>
+                      <td className="px-3 py-3.5 text-xs text-zinc-500 whitespace-nowrap"><UpdatedAt a={a} /></td>
                       <td className="pr-4"><ChevronRight className="size-4 text-zinc-300" /></td>
                     </tr>
                   ))}
@@ -217,8 +233,9 @@ export default function Accounts() {
                         <span className="truncate font-medium">{a.label || a.email}</span>
                         <AuthIcon a={a} />
                       </div>
-                      <AccountBadge status={a.status} />
+                      <AccountState a={a} />
                     </div>
+                    {a.stale && <div className="mt-1 text-xs"><UpdatedAt a={a} /></div>}
                     <div className="mt-2 flex items-center justify-between">
                       <DeviceCounts a={a} />
                       <span className="text-sm font-semibold tabular">{usd(a.balance)}</span>

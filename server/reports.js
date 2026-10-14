@@ -1,5 +1,5 @@
 import { db, getSettings } from './db.js';
-import { localDate, addDays, usageToday } from './stats.js';
+import { localDate, addDays, usageToday, staleMs } from './stats.js';
 
 // Số liệu cho trang Tổng quan và Báo cáo, lọc được theo tài khoản / nhóm / khoảng thời gian
 
@@ -49,7 +49,8 @@ function hourlyRate(accounts) {
   const now = Date.now();
   let rate = 0, measured = 0;
   for (const a of accounts) {
-    if (a.status === 'banned' || a.suspect_reason || a.paused) continue;
+    // Acc đang lỗi lấy dữ liệu: tổng kiếm đứng yên, không tính vào tốc độ để khỏi kéo dự báo xuống
+    if (a.status === 'banned' || a.suspect_reason || a.paused || (a.last_ok_at || 0) < now - staleMs()) continue;
     const snapAt = h => db.prepare('SELECT ts, earnings_total FROM balance_snapshots WHERE account_id = ? AND ts <= ? ORDER BY ts DESC LIMIT 1').get(a.id, now - h * 3600e3);
     const snap = snapAt(6) || snapAt(3);
     if (!snap) continue;
@@ -98,7 +99,8 @@ function accountRows(ids, today) {
   const d7 = addDays(today, -6);
   return accounts.map(a => {
     const dev = db.prepare(`SELECT
-        SUM(status = 'online') AS online, SUM(status = 'idle') AS idle, SUM(status = 'offline') AS offline, SUM(status = 'banned') AS banned, COUNT(*) AS total
+        SUM(status = 'online') AS online, SUM(status = 'idle') AS idle, SUM(status = 'offline') AS offline, SUM(status = 'banned') AS banned,
+        SUM(status = 'unknown') AS unknown, COUNT(*) AS total
       FROM devices WHERE account_id = ? AND missing = 0`).get(a.id);
     const up = db.prepare(`SELECT SUM(dd.online_n) AS o, SUM(dd.check_n) AS c FROM device_daily dd JOIN devices d ON d.uuid = dd.uuid
       WHERE d.account_id = ? AND dd.date = ?`).get(a.id, today);
@@ -107,7 +109,8 @@ function accountRows(ids, today) {
     return {
       id: a.id, name: nameOf(a), email: a.email, label: a.label, group: a.group_name || '', status: a.status,
       auth_state: a.auth_state, suspect: !!a.suspect_reason, limited: a.backoff_until > Date.now(), paused: !!a.paused,
-      dev_total: dev.total || 0, dev_online: dev.online || 0, dev_idle: dev.idle || 0, dev_offline: dev.offline || 0, dev_banned: dev.banned || 0,
+      dev_total: dev.total || 0, dev_online: dev.online || 0, dev_idle: dev.idle || 0, dev_offline: dev.offline || 0, dev_banned: dev.banned || 0, dev_unknown: dev.unknown || 0,
+      stale: !a.archived_at && !a.paused && (a.last_ok_at || 0) < Date.now() - staleMs(), last_ok_at: a.last_ok_at,
       today: round(earnRange(null, today, today, a.id)), d7: round(earnRange(null, d7, today, a.id)),
       usage_today: db.prepare('SELECT COALESCE(SUM(bytes), 0) AS v FROM device_usage WHERE account_id = ? AND date = ?').get(a.id, uDay).v,
       uptime_today: up.c ? up.o / up.c : null,
@@ -137,7 +140,11 @@ function attention(ids) {
   for (const a of accs) {
     if (a.suspect_reason) out.push({ type: 'suspect', level: 'critical', account_id: a.id, account: nameOf(a), detail: a.suspect_reason });
     if (a.auth_state === 'expired') out.push({ type: 'auth', level: 'warning', account_id: a.id, account: nameOf(a), detail: 'Cookie hết hạn, cần dán cookie mới' });
-    if (a.auth_state === 'error') out.push({ type: 'error', level: 'warning', account_id: a.id, account: nameOf(a), detail: a.last_error });
+    if (a.auth_state === 'error') {
+      const since = a.last_ok_at ? new Date(a.last_ok_at).toLocaleString('vi-VN', { timeZone: getSettings().timezone, hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : null;
+      out.push({ type: 'error', level: 'warning', account_id: a.id, account: nameOf(a),
+        detail: `${since ? `Không lấy được dữ liệu mới từ ${since}, số liệu đang là của lúc đó. ` : ''}Lỗi: ${a.last_error}` });
+    }
     if (a.backoff_until > now) out.push({ type: 'limited', level: 'info', account_id: a.id, account: nameOf(a), detail: 'EarnApp đang giới hạn truy cập, web tự thử lại' });
   }
   const devs = db.prepare(`SELECT d.*, a.label, a.email, a.id AS aid FROM devices d JOIN accounts a ON a.id = d.account_id
@@ -175,7 +182,7 @@ export function overview(q = {}) {
       COALESCE(SUM(CASE WHEN status != 'paid' THEN amount END), 0) AS pending, SUM(status != 'paid') AS pending_n
     FROM transactions WHERE ${inScope(ids)}`).get();
   const dev = db.prepare(`SELECT SUM(status = 'online') AS online, SUM(status = 'idle') AS idle, SUM(status = 'offline') AS offline,
-      SUM(status = 'banned') AS banned FROM devices WHERE ${inScope(ids)} AND missing = 0`).get();
+      SUM(status = 'banned') AS banned, SUM(status = 'unknown') AS unknown FROM devices WHERE ${inScope(ids)} AND missing = 0`).get();
 
   const earnToday = earnRange(ids, today, today);
   const earnYesterday = earnRange(ids, yesterday, yesterday);
@@ -203,7 +210,7 @@ export function overview(q = {}) {
 
   const rows = accountRows(ids, today);
   const groups = [...new Set(rows.map(r => r.group).filter(Boolean))].length
-    ? groupRows(rows, ['dev_total', 'dev_online', 'dev_idle', 'dev_offline', 'dev_banned', 'today', 'd7', 'usage_today', 'balance', 'lifetime', 'withdrawn', 'pending'])
+    ? groupRows(rows, ['dev_total', 'dev_online', 'dev_idle', 'dev_offline', 'dev_banned', 'dev_unknown', 'today', 'd7', 'usage_today', 'balance', 'lifetime', 'withdrawn', 'pending'])
     : [];
 
   return {
@@ -221,7 +228,9 @@ export function overview(q = {}) {
     usage_today: usageRange(ids, uDay, uDay), usage_yesterday: usageRange(ids, addDays(uDay, -1), addDays(uDay, -1)),
     usage_7d: usageRange(ids, addDays(uDay, -6), uDay), usage_month: monthlyUsage || usageRange(ids, uDay.slice(0, 8) + '01', uDay),
     uptime_today: uptimeRange(ids, today, today),
-    devices: { online: dev.online || 0, idle: dev.idle || 0, offline: dev.offline || 0, banned: dev.banned || 0 },
+    devices: { online: dev.online || 0, idle: dev.idle || 0, offline: dev.offline || 0, banned: dev.banned || 0, unknown: dev.unknown || 0 },
+    stale: rows.filter(r => r.stale).length,
+    stale_since: Math.min(...rows.filter(r => r.stale).map(r => r.last_ok_at || 0)) || null,
     accounts: {
       total: accounts.filter(a => !a.archived_at).length,
       running: accounts.filter(a => a.status === 'running' && !a.archived_at).length,

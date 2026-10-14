@@ -10,6 +10,9 @@ export function addDays(date, n) {
 
 const round = n => Math.round((n || 0) * 1000) / 1000;
 
+/** Quá thời gian này không lấy được dữ liệu mới thì coi số liệu acc là cũ (máy -> "Chưa rõ") */
+export const staleMs = (s = getSettings()) => Math.max(30, 3 * (Number(s.sync_max_min) || 10)) * 60e3;
+
 /** Byte -> chuỗi dễ đọc, hệ 1000 giống EarnApp */
 export function fmtBytes(n) {
   const v = Number(n) || 0;
@@ -68,8 +71,10 @@ export function summary() {
       SUM(status = 'banned') AS banned_accounts,
       SUM(auth_state IN ('expired', 'error') AND archived_at IS NULL) AS auth_problems,
       SUM(suspect_reason != '') AS suspects,
-      SUM(backoff_until > ?) AS rate_limited
-    FROM accounts`).get(Date.now());
+      SUM(backoff_until > ?) AS rate_limited,
+      SUM(archived_at IS NULL AND paused = 0 AND COALESCE(last_ok_at, 0) < ?) AS stale,
+      MIN(CASE WHEN archived_at IS NULL AND paused = 0 AND COALESCE(last_ok_at, 0) < ? THEN last_ok_at END) AS stale_since
+    FROM accounts`).get(Date.now(), Date.now() - staleMs(s), Date.now() - staleMs(s));
   const w = db.prepare(`
     SELECT
       COALESCE(SUM(CASE WHEN status = 'paid' THEN amount END), 0) AS withdrawn,
@@ -79,7 +84,7 @@ export function summary() {
   const d = db.prepare(`
     SELECT
       SUM(d.status = 'online') AS online, SUM(d.status = 'idle') AS idle,
-      SUM(d.status = 'offline') AS offline, SUM(d.status = 'banned') AS banned
+      SUM(d.status = 'offline') AS offline, SUM(d.status = 'banned') AS banned, SUM(d.status = 'unknown') AS unknown
     FROM devices d WHERE d.missing = 0`).get();
   const earn = date => db.prepare('SELECT COALESCE(SUM(last_total - first_total), 0) AS v FROM account_daily WHERE date = ?').get(date).v;
   const month = db.prepare('SELECT COALESCE(SUM(last_total - first_total), 0) AS v FROM account_daily WHERE date >= ?').get(today.slice(0, 8) + '01').v;
@@ -95,8 +100,8 @@ export function summary() {
     lifetime: round(t.lifetime), current: round(t.current), withdrawn: round(w.withdrawn), banned: round(t.banned),
     pending: round(w.pending), pending_count: w.pending_count || 0,
     today: round(earn(today)), yesterday: round(earn(addDays(today, -1))), month: round(month),
-    accounts: { total: t.accounts || 0, running: t.running || 0, stopped: t.stopped || 0, banned: t.banned_accounts || 0, auth_problems: t.auth_problems || 0, suspects: t.suspects || 0, rate_limited: t.rate_limited || 0 },
-    devices: { online: d.online || 0, idle: d.idle || 0, offline: d.offline || 0, banned: d.banned || 0 },
+    accounts: { total: t.accounts || 0, running: t.running || 0, stopped: t.stopped || 0, banned: t.banned_accounts || 0, auth_problems: t.auth_problems || 0, suspects: t.suspects || 0, rate_limited: t.rate_limited || 0, stale: t.stale || 0, stale_since: t.stale_since || null },
+    devices: { online: d.online || 0, idle: d.idle || 0, offline: d.offline || 0, banned: d.banned || 0, unknown: d.unknown || 0 },
     usd_vnd: s.usd_vnd,
   };
 }

@@ -8,7 +8,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eam-test-'));
 const { db, getSettings, setSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, AuthError, BannedError, RateLimitError } = await import('../server/earnapp.js');
-const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll } = await import('../server/sync.js');
+const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, markStale } = await import('../server/sync.js');
 const { summary } = await import('../server/stats.js');
 const { formatAlerts } = await import('../server/alerts.js');
 const has = (list, type) => list.some(a => a.type === type);
@@ -242,10 +242,21 @@ const sample = [
 ];
 const msg = formatAlerts(sample, { ...s(), usd_vnd: 26000 });
 console.log('----- Mẫu tin Telegram -----\n' + msg.replace(/<\/?b>/g, '') + '\n----------------------------');
-assert.ok(msg.includes('Acc VPS 1') && msg.includes('a@gmail.com') && msg.includes('b@gmail.com'), 'có tên và email');
+assert.ok(msg.includes('<b>a@gmail.com</b>') && msg.includes('<b>b@gmail.com</b>'), 'tên acc là email');
+assert.ok(!msg.includes('Acc VPS 1'), 'không dùng tên tự đặt');
 assert.equal(msg.split('👤').length - 1, 2, 'gom theo 2 tài khoản');
-assert.ok(msg.indexOf('BAN</b>') < msg.indexOf('GỠ BAN'), 'việc nghiêm trọng lên trước');
-assert.ok(msg.includes('IP bị đánh giá chất lượng kém'), 'lý do ban bằng tiếng Việt');
+assert.ok(msg.indexOf('bị BAN') < msg.indexOf('gỡ ban'), 'việc nghiêm trọng lên trước');
+assert.ok(msg.includes('IP chất lượng kém'), 'lý do ban bằng tiếng Việt');
+// Nhiều acc cùng lỗi: gộp 1 mục, lỗi 404 giải thích dễ hiểu, ghi số liệu dừng từ lúc nào
+const many = ['x1@gmail.com', 'x2@gmail.com', 'x3@gmail.com'].map((email, i) => ({ type: 'sync_error', account_id: 100 + i, email,
+  why: 'EarnApp user_data lỗi 404: Not found', count: 3, since: Date.now() - 3 * 3600e3 }));
+const mergedMsg = formatAlerts(many, s());
+console.log('----- Mẫu tin gộp -----\n' + mergedMsg.replace(/<\/?b>/g, '') + '\n-----------------------');
+assert.equal(mergedMsg.split('👤').length - 1, 0, 'không tách từng acc');
+assert.ok(mergedMsg.includes('3 acc không lấy được dữ liệu mới') && mergedMsg.includes('x3@gmail.com'));
+assert.ok(mergedMsg.includes('bảo trì') && mergedMsg.includes('đang dừng từ'));
+// 2 acc thì vẫn tách riêng
+assert.equal(formatAlerts(many.slice(0, 2), s()).split('👤').length - 1, 2);
 
 // 20. Trạng thái luôn tự động: acc ở chế độ tay cũ vẫn được cập nhật theo máy
 db.prepare("UPDATE accounts SET status = 'running', status_mode = 'manual', backoff_until = NULL, paused = 0 WHERE id = 2").run();
@@ -333,5 +344,33 @@ assert.equal(alertQueue.at(-1).device, 'x599', 'giữ cảnh báo mới nhất')
 alertQueue.length = 0;
 globalThis.fetch = realFetch;
 setSettings({ telegram_token: '', telegram_chat_id: '' });
+
+// Dữ liệu cũ: lâu không lấy được dữ liệu mới thì máy chuyển "Chưa rõ", lấy lại được thì về trạng thái thật
+{
+  db.prepare("INSERT INTO accounts(email, cookie_enc, created_at) VALUES ('stale@test.com', ?, ?)").run(encrypt('oauth-refresh-token=x'), Date.now());
+  const sid = db.prepare("SELECT id FROM accounts WHERE email = 'stale@test.com'").get().id;
+  const sacc = () => db.prepare('SELECT * FROM accounts WHERE id = ?').get(sid);
+  fake = base({ user: { email: 'stale@test.com' }, devices: [dev('s1', { earned_total: 1 })], statuses: { s1: [Date.now() - 6e5, 6e5] }, usage: [], usageMonthly: null });
+  await syncAccount(sacc(), s());
+  assert.equal(devRow('s1').status, 'online');
+  assert.ok(sacc().last_ok_at > 0, 'ghi lần thành công');
+  markStale();
+  assert.equal(devRow('s1').status, 'online', 'vừa lấy xong: chưa cũ');
+  db.prepare('UPDATE accounts SET last_ok_at = ? WHERE id = ?').run(Date.now() - 31 * 60e3, sid);
+  markStale();
+  assert.equal(devRow('s1').status, 'unknown', 'quá 30 phút: chưa rõ');
+  const staleBefore = summary().accounts.stale;
+  assert.ok(staleBefore >= 1 && summary().devices.unknown >= 1, 'tổng quan đếm máy chưa rõ');
+  // Lỗi lấy dữ liệu: vẫn chưa rõ, không bị đếm là online
+  fake = new Error('EarnApp user_data lỗi 404: Not found');
+  await syncAccount(sacc(), s());
+  markStale();
+  assert.equal(devRow('s1').status, 'unknown');
+  // Lấy lại được: về trạng thái thật
+  fake = base({ user: { email: 'stale@test.com' }, devices: [dev('s1', { earned_total: 1.1 })], statuses: { s1: [Date.now() - 6e5, 6e5] }, usage: [], usageMonthly: null });
+  await syncAccount(sacc(), s());
+  assert.equal(devRow('s1').status, 'online');
+  assert.equal(summary().accounts.stale, staleBefore - 1, 'hết bị coi là dữ liệu cũ');
+}
 
 console.log('✅ Tất cả test đều đạt');

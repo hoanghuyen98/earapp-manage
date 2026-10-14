@@ -79,7 +79,16 @@ export const DEVICE_STATUS = {
   idle: { label: 'Không ra tiền', color: 'bg-warn', text: 'text-amber-600 dark:text-warn', hint: 'Online nhưng nhiều giờ không tăng tiền' },
   offline: { label: 'Rớt mạng', color: 'bg-bad', text: 'text-bad', hint: 'Máy bị tắt hoặc mất kết nối' },
   banned: { label: 'Bị ban', color: 'bg-muted', text: 'text-zinc-500', hint: 'EarnApp đã chặn máy này' },
+  unknown: { label: 'Chưa rõ', color: 'bg-zinc-300 dark:bg-zinc-600', text: 'text-zinc-400', hint: 'Web không lấy được dữ liệu mới từ EarnApp, chưa biết máy đang chạy hay không' },
 };
+
+/** Lỗi kỹ thuật -> câu dễ hiểu (giống tin Telegram) */
+export function explainError(msg = '') {
+  const m = String(msg || '');
+  if (/lỗi 404|Not found/i.test(m)) return 'EarnApp trả lỗi 404 (không tìm thấy). Thường do EarnApp đang bảo trì hoặc chặn IP của web.';
+  if (/lỗi 5\d\d/.test(m)) return 'Máy chủ EarnApp đang lỗi.';
+  return m;
+}
 
 export const ACCOUNT_STATUS = {
   running: { label: 'Running', vi: 'Đang chạy', hint: 'Còn máy đang chạy (tự động)', cls: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-500/20' },

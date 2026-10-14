@@ -197,7 +197,11 @@ addColumn('device_daily', 'online_n', 'INTEGER NOT NULL DEFAULT 0');  // số l�
 addColumn('accounts', 'empty_status_streak', 'INTEGER NOT NULL DEFAULT 0'); // số lần liên tiếp EarnApp trả trạng thái máy rỗng
 addColumn('accounts', 'error_streak', 'INTEGER NOT NULL DEFAULT 0');  // số lần lấy dữ liệu lỗi liên tiếp (mạng, proxy…)
 addColumn('accounts', 'archived_at', 'INTEGER');
-addColumn('accounts', 'redeem_details', 'TEXT'); // Auto-redeem cài trên EarnApp: JSON {email, payment_method}, '' = chưa cài, NULL = chưa biết
+addColumn('accounts', 'redeem_details', 'TEXT');
+addColumn('accounts', 'last_ok_at', 'INTEGER'); // lần cuối lấy dữ liệu THÀNH CÔNG (last_sync_at tính cả lần lỗi)
+// DB cũ: lấy mốc máy được cập nhật gần nhất làm lần thành công cuối
+db.exec(`UPDATE accounts SET last_ok_at = COALESCE((SELECT MAX(updated_at) FROM devices WHERE account_id = accounts.id),
+  CASE WHEN auth_state = 'ok' THEN last_sync_at END) WHERE last_ok_at IS NULL`); // Auto-redeem cài trên EarnApp: JSON {email, payment_method}, '' = chưa cài, NULL = chưa biết
 addColumn('users', 'session_ver', 'INTEGER NOT NULL DEFAULT 0'); // tăng lên thì mọi phiên đăng nhập cũ hết hiệu lực                      // đã lưu trữ: ngừng theo dõi nhưng giữ số liệu
 
 // Tên acc luôn là email đăng ký lấy từ EarnApp: bỏ tên tự đặt của bản cũ

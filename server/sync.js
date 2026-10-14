@@ -1,9 +1,10 @@
 import { db, getSettings, setSettings, addEvent, tx } from './db.js';
 import { decrypt } from './crypto.js';
 import { EarnAppClient, AuthError, BannedError, RateLimitError } from './earnapp.js';
-import { sendTelegram, esc } from './telegram.js';
+import { sendTelegram } from './telegram.js';
 import { formatAlerts } from './alerts.js';
-import { localDate, summary, addDays, fmtBytes } from './stats.js';
+import { formatDailyReport } from './dailyReport.js';
+import { localDate, addDays, staleMs } from './stats.js';
 import { config } from './config.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -78,7 +79,7 @@ export async function syncAccount(acc, s = getSettings()) {
       db.prepare("UPDATE accounts SET auth_state = 'error', last_error = ?, last_sync_at = ?, error_streak = ? WHERE id = ?").run(msg, now, streak, acc.id);
       if (streak === Math.max(1, Number(s.error_alert_count) || 3)) {
         addEvent({ account_id: acc.id, type: 'sync_error', level: 'critical', message: `${accName(acc)}: lấy dữ liệu lỗi ${streak} lần liên tiếp (${msg})` });
-        if (s.notify_sync_error) alerts.push(A('sync_error', { why: msg, count: streak, proxy: !!acc.proxy }));
+        if (s.notify_sync_error) alerts.push(A('sync_error', { why: msg, count: streak, proxy: !!acc.proxy, since: acc.last_ok_at }));
       }
     }
     return alerts;
@@ -119,9 +120,9 @@ export async function syncAccount(acc, s = getSettings()) {
 
   tx(() => {
     // --- Tài khoản ---
-    db.prepare(`UPDATE accounts SET email = ?, joined_at = ?, auth_state = 'ok', last_error = '', last_sync_at = ?,
+    db.prepare(`UPDATE accounts SET email = ?, joined_at = ?, auth_state = 'ok', last_error = '', last_sync_at = ?, last_ok_at = ?,
         backoff_level = 0, backoff_until = NULL, suspect_ack = 0, error_streak = 0 WHERE id = ?`)
-      .run(user.email, user.joined_ts || null, now, acc.id);
+      .run(user.email, user.joined_ts || null, now, now, acc.id);
     if (!frozen) {
       db.prepare('UPDATE accounts SET balance = ?, earnings_total = ? WHERE id = ?').run(balance, total, acc.id);
       upsertDaily('account_daily', 'account_id', acc.id, today, total);
@@ -286,26 +287,7 @@ async function dailyReport(s) {
   const today = localDate(now, s.timezone);
   const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: s.timezone, hour: '2-digit', hour12: false }).format(now));
   if (!s.daily_report || hour < s.daily_report_hour || s.last_daily_report === today) return;
-  const t = summary();
-  const diff = t.today - t.yesterday;
-  const arrow = diff > 0.0005 ? '⬆️' : diff < -0.0005 ? '⬇️' : '➡️';
-  const vnd = n => Math.round(n * s.usd_vnd).toLocaleString('vi-VN') + 'đ';
-  const msg = [
-    `📊 <b>Báo cáo ngày ${today.split('-').reverse().join('/')}</b>`,
-    `Hôm nay: <b>${money(t.today)}</b> (${vnd(t.today)}) ${arrow} hôm qua ${money(t.yesterday)}`,
-    `Tháng này: ${money(t.month)} (${vnd(t.month)})`,
-    '',
-    `🟢 ${t.devices.online} chạy · 🟡 ${t.devices.idle} không ra tiền · 🔴 ${t.devices.offline} rớt · ⚪ ${t.devices.banned} bị ban`,
-    `Acc: ${t.accounts.running} chạy · ${t.accounts.stopped} dừng · ${t.accounts.banned} bị khoá`,
-    '',
-    `📶 Dung lượng hôm nay: ${fmtBytes(t.usage_today)} · 7 ngày: ${fmtBytes(t.usage_7d)}`,
-    '',
-    `💰 Số dư hiện tại: ${money(t.current)}`,
-    `💵 Đã rút: ${money(t.withdrawn)}${t.pending_count ? ` · đang chờ ${money(t.pending)}` : ''}`,
-    `📈 Tổng lifetime: ${money(t.lifetime)}`,
-  ];
-  if (t.accounts.auth_problems) msg.push('', `🔑 ${t.accounts.auth_problems} acc cần cập nhật cookie`);
-  await sendTelegram(msg.join('\n'), s);
+  await sendTelegram(formatDailyReport(s, now), s);
   setSettings({ last_daily_report: today });
 }
 
@@ -417,6 +399,14 @@ export async function runCycle(ids = null) {
   return true;
 }
 
+/** Acc lâu không lấy được dữ liệu mới: máy chuyển sang "Chưa rõ" thay vì giữ màu xanh cũ.
+ *  Lần lấy dữ liệu thành công kế tiếp sẽ tính lại trạng thái thật. */
+export function markStale(now = Date.now(), s = getSettings()) {
+  return db.prepare(`UPDATE devices SET status = 'unknown', online = 0, status_changed_at = ?
+    WHERE missing = 0 AND status NOT IN ('unknown', 'banned')
+      AND account_id IN (SELECT id FROM accounts WHERE archived_at IS NULL AND COALESCE(last_ok_at, 0) < ?)`).run(now, now - staleMs(s)).changes;
+}
+
 let lastCleanup = '';
 function cleanup(s) {
   const today = localDate(Date.now(), s.timezone);
@@ -430,6 +420,7 @@ function cleanup(s) {
 
 export function startScheduler() {
   spreadOverdue();
+  markStale();
   const loop = async () => {
     const s = getSettings();
     let wait = 5000;
@@ -453,6 +444,7 @@ export function startScheduler() {
   // Gom cảnh báo gửi Telegram mỗi phút, tránh spam từng tin
   setInterval(() => {
     const s = getSettings();
+    markStale(Date.now(), s);
     flushAlerts(s);
     dailyReport(s).catch(e => console.error('daily report', e.message));
     cleanup(s);
