@@ -3,10 +3,11 @@ import { esc } from './telegram.js';
 // Soạn tin Telegram từ danh sách cảnh báo: gom theo tài khoản, giải thích rõ và ghi việc cần làm
 
 const BAN_REASON = { earnapp_blacklist: 'IP nằm trong danh sách đen', ip_quality: 'IP bị đánh giá chất lượng kém' };
-const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise' };
+const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise', 'wise.com': 'Wise' };
+const methodName = m => METHOD[m] || (/^amazon/.test(m || '') ? 'Amazon Gift Card' : m || '—');
 
 // Thứ tự hiển thị: việc nghiêm trọng / cần xử lý lên trước
-const ORDER = ['account_banned', 'account_suspect', 'auth', 'sync_error', 'device_banned', 'device_offline', 'device_idle',
+const ORDER = ['account_banned', 'account_suspect', 'auth', 'withdraw_failed', 'withdraw_skipped', 'withdraw_ok', 'sync_error', 'device_banned', 'device_offline', 'device_idle',
   'rate_limit', 'payout_paid', 'payout_new', 'sync_ok', 'device_online', 'device_unbanned'];
 
 const LIST_MAX = 10;
@@ -76,10 +77,20 @@ export function formatAlerts(list, s) {
           parts.push(`⏳ <b>EarnApp đang chặn truy cập</b> vì gọi quá nhiều. Web tự giãn thời gian chờ rồi thử lại.\n👉 Nếu kéo dài: tăng thời gian lấy dữ liệu trong Cài đặt hoặc đặt proxy cho acc.`);
           break;
         case 'payout_paid':
-          for (const a of g) parts.push(`✅ <b>Tiền đã về</b>: ${usd(a.amount)} (≈ ${vnd(a.amount)}) qua ${esc(METHOD[a.method] || a.method || '—')}`);
+          for (const a of g) parts.push(`✅ <b>Tiền đã về</b>: ${usd(a.amount)} (≈ ${vnd(a.amount)}) qua ${esc(methodName(a.method))}`);
           break;
         case 'payout_new':
-          for (const a of g) parts.push(`💸 <b>Lệnh rút mới</b>: ${usd(a.amount)} qua ${esc(METHOD[a.method] || a.method || '—')}, đang chờ EarnApp xử lý.`);
+          for (const a of g) parts.push(`💸 <b>Lệnh rút mới</b>: ${usd(a.amount)} qua ${esc(methodName(a.method))}, đang chờ EarnApp xử lý.`);
+          break;
+        case 'withdraw_ok':
+          parts.push(`💰 <b>Đã tạo lệnh rút</b>: ${usd(first.amount)} (≈ ${vnd(first.amount)}) qua ${esc(methodName(first.method))} tới ${esc(first.to)}. Lệnh đang chờ EarnApp duyệt.`);
+          break;
+        case 'withdraw_skipped':
+          parts.push(`⏭ <b>Chưa rút được</b>: ${esc(first.why)}. Lịch hằng tuần (nếu có) vẫn giữ, tới lần sau sẽ thử lại.`);
+          break;
+        case 'withdraw_failed':
+          parts.push(`❌ <b>Rút tiền THẤT BẠI</b>: ${esc(first.why)}
+👉 Mở mục Rút tiền → Hẹn giờ rút trên web để kiểm tra và bấm "Rút ngay" nếu cần.`);
           break;
         case 'device_online':
           parts.push(`🟢 <b>${n} máy ONLINE trở lại</b>, chạy bình thường:\n${deviceLines(g)}`);

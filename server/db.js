@@ -149,6 +149,37 @@ CREATE TABLE IF NOT EXISTS device_usage_monthly (
 );
 `);
 
+// Hẹn giờ rút tiền: mỗi acc 1 lịch
+db.exec(`
+CREATE TABLE IF NOT EXISTS withdraw_schedules (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL DEFAULT 'weekly',  -- once: rút 1 lần | weekly: lặp lại hằng tuần
+  run_date TEXT,                        -- once: YYYY-MM-DD
+  weekdays TEXT NOT NULL DEFAULT '',    -- weekly: các thứ, 0 = CN, VD "3" hoặc "1,4"
+  time TEXT NOT NULL,                   -- HH:MM theo múi giờ cài đặt
+  method TEXT NOT NULL,                 -- paypal.com | wise.com | amazon...
+  email TEXT NOT NULL,                  -- email nhận tiền
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,  -- số lần đã thử lại do lỗi mạng
+  last_run_at INTEGER,
+  last_status TEXT,                     -- ok | failed | skipped | retry | missed
+  last_message TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS withdraw_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  ts INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  amount REAL,
+  method TEXT,
+  email TEXT,
+  message TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_withdraw_log_ts ON withdraw_log(ts);
+`);
+
 // Thêm cột cho DB tạo từ bản cũ
 function addColumn(table, col, def) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
@@ -197,6 +228,7 @@ const DEFAULT_SETTINGS = {
   notify_suspect: true,
   notify_rate_limit: true,
   notify_sync_error: true,
+  notify_withdraw: true,
   error_alert_count: 3,        // lỗi lấy dữ liệu N lần liên tiếp thì báo
   daily_report: true,
   daily_report_hour: 21,

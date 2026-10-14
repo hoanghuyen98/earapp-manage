@@ -310,7 +310,7 @@ export function nextDelayMs(s) {
 
 // Khoá: chỉ đồng bộ 1 acc mỗi lúc (lịch tự động và bấm tay dùng chung)
 let lock = Promise.resolve();
-function withLock(fn) {
+export function withLock(fn) {
   const r = lock.then(fn, fn);
   lock = r.catch(() => {});
   return r;

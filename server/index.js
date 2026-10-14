@@ -11,6 +11,7 @@ import { runCycle, startScheduler, syncState, requestSyncAll } from './sync.js';
 import { summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
 import { sendTelegram } from './telegram.js';
 import { overview, report, scopeOptions } from './reports.js';
+import { PAYOUT_METHODS, saveSchedule, runWithdraw, recomputeSchedules, startWithdrawScheduler } from './withdraw.js';
 
 const app = express();
 app.set('trust proxy', 'loopback');
@@ -241,6 +242,49 @@ app.post('/api/sync', async (req, res) => {
   res.json({ ok: true, queued: requestSyncAll() });
 });
 
+// ---------- Hẹn giờ rút tiền ----------
+app.get('/api/withdraw', (req, res) => {
+  res.json({
+    methods: PAYOUT_METHODS,
+    timezone: getSettings().timezone,
+    accounts: db.prepare(`SELECT a.id, a.email, a.label, a.group_name, a.balance, a.status, a.auth_state, a.archived_at, w.mode, w.run_date, w.weekdays, w.time,
+        w.method, w.email AS pay_email, w.enabled, w.next_run_at, w.last_run_at, w.last_status, w.last_message
+      FROM accounts a LEFT JOIN withdraw_schedules w ON w.account_id = a.id ORDER BY a.archived_at IS NOT NULL, a.id`).all(),
+    log: db.prepare(`SELECT l.*, COALESCE(a.label, a.email) AS account FROM withdraw_log l JOIN accounts a ON a.id = l.account_id ORDER BY l.id DESC LIMIT 100`).all(),
+  });
+});
+
+/** Lưu lịch cho 1 hoặc nhiều acc (ids) cùng lúc */
+app.put('/api/withdraw', (req, res) => {
+  const ids = (req.body?.ids || []).map(Number).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'Chưa chọn acc' });
+  try {
+    for (const id of ids) {
+      if (!db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(id)) continue;
+      saveSchedule(id, req.body);
+    }
+  } catch (e) { return res.status(400).json({ error: e.message }); }
+  res.json({ ok: true });
+});
+
+app.patch('/api/withdraw/:id', (req, res) => {
+  const enabled = req.body?.enabled ? 1 : 0;
+  const sch = db.prepare('SELECT * FROM withdraw_schedules WHERE account_id = ?').get(req.params.id);
+  if (!sch) return res.status(404).json({ error: 'Không tìm thấy' });
+  try { saveSchedule(sch.account_id, { ...sch, enabled }); } catch (e) { return res.status(400).json({ error: e.message }); }
+  res.json({ ok: true });
+});
+
+app.delete('/api/withdraw/:id', (req, res) => {
+  db.prepare('DELETE FROM withdraw_schedules WHERE account_id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/withdraw/:id/run', async (req, res) => {
+  const r = await runWithdraw(Number(req.params.id), { manual: true });
+  res.status(r.status === 'ok' ? 200 : 400).json(r.status === 'ok' ? r : { ...r, error: r.message });
+});
+
 // ---------- Máy, giao dịch, sự kiện ----------
 app.get('/api/devices', (req, res) => {
   res.json(db.prepare(`
@@ -303,6 +347,7 @@ app.put('/api/settings', (req, res) => {
     return res.status(400).json({ error: 'Thời gian tối đa phải lớn hơn hoặc bằng tối thiểu' });
   }
   setSettings(b);
+  if (b.timezone && b.timezone !== cur.timezone) recomputeSchedules(b.timezone);
   res.json({ ok: true });
 });
 
@@ -402,4 +447,5 @@ if (fs.existsSync(dist)) {
 app.listen(config.port, () => {
   console.log(`EarnApp Manager chạy tại http://localhost:${config.port}`);
   startScheduler();
+  startWithdrawScheduler();
 });

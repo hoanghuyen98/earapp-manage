@@ -13,6 +13,11 @@ Web theo dõi nhiều tài khoản EarnApp: trạng thái máy theo thời gian 
   - 🔴 Rớt mạng
   - ⚪ Bị ban
 - **Rút tiền:** lịch sử rút và lệnh rút đang chờ của tất cả acc.
+- **Hẹn giờ rút tự động** (Rút tiền → Hẹn giờ rút tự động): mỗi acc 1 lịch, rút 1 lần vào ngày giờ cụ thể (VD 10:00 T4 14/10) hoặc lặp lại hằng tuần (VD 15:00 mỗi T5).
+  - Chọn PayPal / Wise / Amazon và email nhận tiền. Chọn nhiều acc để hẹn cùng một lịch.
+  - EarnApp chỉ cho rút **toàn bộ số dư**, tối thiểu PayPal/Wise $10, Amazon $50. Chưa đủ thì web bỏ qua lần đó và báo Telegram.
+  - Lỗi mạng / proxy thì thử lại sau 10 phút (tối đa 3 lần). Web tắt quá 24h làm lỡ giờ hẹn thì bỏ qua, không rút bù vào giờ khác.
+  - Có nút **Rút ngay** và nhật ký các lần rút.
 - **Báo cáo:** lãi lỗ theo tháng (thu nhập quy đổi VNĐ trừ chi phí), xếp hạng máy và tài khoản.
 - **Telegram:**
   - Báo khi máy rớt mạng, máy bị ban, acc bị khoá, cookie hết hạn, có lệnh rút mới hoặc tiền đã về.

@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Wallet, Download, Clock, CheckCircle2, Receipt } from 'lucide-react';
 import { api, usd, vnd, fmtDateTime, txStatus } from '../lib';
+import WithdrawSchedule from './WithdrawSchedule';
 import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Empty, Badge, useData, cx } from '../ui';
 
-const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise' };
-export const methodName = m => METHOD[m] || m || '—';
+const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise', 'wise.com': 'Wise' };
+export const methodName = m => METHOD[m] || (/^amazon/.test(m || '') ? 'Amazon Gift Card' : m || '—');
 
 export function TxTable({ list, showAccount }) {
   if (!list.length) return <Empty icon={Receipt} title="Chưa có lệnh rút nào" />;
@@ -64,6 +65,26 @@ export function TxTable({ list, showAccount }) {
 }
 
 export default function Payouts() {
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') === 'schedule' ? 'schedule' : 'history';
+  const viewTabs = (
+    <Tabs value={view} onChange={v => setParams(v === 'schedule' ? { view: v } : {}, { replace: true })} items={[
+      { value: 'history', label: 'Lịch sử rút' },
+      { value: 'schedule', label: 'Hẹn giờ rút tự động' },
+    ]} />
+  );
+  if (view === 'schedule') {
+    return (
+      <>
+        <PageHeader title="Rút tiền" subtitle="Hẹn giờ cho từng acc, tới giờ web tự rút toàn bộ số dư">{viewTabs}</PageHeader>
+        <WithdrawSchedule />
+      </>
+    );
+  }
+  return <PayoutHistory viewTabs={viewTabs} />;
+}
+
+function PayoutHistory({ viewTabs }) {
   const { data, loading } = useData(() => Promise.all([api('/transactions'), api('/settings')]), [], 60000);
   const [tab, setTab] = useState('all');
   const [q, setQ] = useState('');
@@ -90,6 +111,7 @@ export default function Payouts() {
   return (
     <>
       <PageHeader title="Rút tiền" subtitle="Lịch sử rút và các lệnh rút đang chờ của tất cả tài khoản">
+        {viewTabs}
         <a href="/api/export/transactions"><Button variant="secondary" icon={Download}>Xuất Excel</Button></a>
       </PageHeader>
       <div className="mb-6 grid gap-4 sm:grid-cols-3">

@@ -14,6 +14,7 @@ const NOTIFY = [
   ['notify_sync_error', 'Không lấy được dữ liệu', 'Proxy chết, mất mạng… lỗi liên tiếp quá số lần cài bên dưới'],
   ['notify_rate_limit', 'Bị EarnApp giới hạn truy cập', 'Báo khi bị chặn liên tục (lần thứ 3 trở đi)'],
   ['notify_payout', 'Rút tiền', 'Có lệnh rút mới và khi tiền về'],
+  ['notify_withdraw', 'Hẹn giờ rút', 'Kết quả mỗi lần rút theo lịch: đã rút, chưa đủ tiền, hoặc lỗi'],
 ];
 
 function NumberRow({ label, hint, children }) {
