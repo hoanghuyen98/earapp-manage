@@ -4,12 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eam-test-'));
+process.env.PAYOUT_EMAILS = 'me@paypal.com, Pay1@test.com;pay2@test.com';
 
 const { db, setSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, NetworkError } = await import('../server/earnapp.js');
 const { alertQueue } = await import('../server/sync.js');
-const { zonedTs, nextRunAt, validateSchedule, saveSchedule, runWithdraw, checkDueWithdrawals } = await import('../server/withdraw.js');
+const { zonedTs, nextRunAt, validateSchedule, saveSchedule, runWithdraw, checkDueWithdrawals, describeSchedule, notifyChange } = await import('../server/withdraw.js');
+const { config } = await import('../server/config.js');
+const { syncAccount } = await import('../server/sync.js');
 const { formatAlerts } = await import('../server/alerts.js');
 
 setSettings({ timezone: 'Asia/Ho_Chi_Minh', telegram_token: '' });
@@ -35,7 +38,11 @@ assert.equal(nextRunAt({ mode: 'once', run_date: '2026-10-14', time: '08:00' }, 
 // ---- Kiểm tra dữ liệu nhập ----
 const base = { mode: 'weekly', weekdays: [3], time: '10:00', method: 'paypal.com', email: 'me@paypal.com' };
 assert.throws(() => validateSchedule({ ...base, time: '25:00' }, wed9, TZ), /Giờ rút/);
-assert.throws(() => validateSchedule({ ...base, email: 'abc' }, wed9, TZ), /Email/);
+assert.throws(() => validateSchedule({ ...base, email: 'abc' }, wed9, TZ), /danh sách được phép/);
+assert.throws(() => validateSchedule({ ...base, email: 'hacker@evil.com' }, wed9, TZ), /danh sách được phép/, 'email ngoài .env bị chặn');
+assert.equal(validateSchedule({ ...base, email: ' PAY1@test.com ' }, wed9, TZ).email, 'pay1@test.com', 'không phân biệt hoa thường');
+assert.equal(describeSchedule({ mode: 'weekly', weekdays: '0,4,1', time: '15:00' }), 'hằng tuần 15:00 T2, T5, CN');
+assert.equal(describeSchedule({ mode: 'once', run_date: '2026-10-14', time: '10:00' }), '1 lần 10:00 14/10/2026');
 assert.throws(() => validateSchedule({ ...base, method: 'x' }, wed9, TZ), /phương thức/);
 assert.throws(() => validateSchedule({ ...base, weekdays: [] }, wed9, TZ), /thứ/);
 assert.throws(() => validateSchedule({ ...base, mode: 'once', run_date: '2026-10-14', time: '08:00' }, wed9, TZ), /đã qua/);
@@ -138,9 +145,44 @@ const r = await runWithdraw(2, { manual: true });
 assert.equal(r.status, 'ok');
 assert.equal(sch(2).next_run_at, before);
 
+// Email bị gỡ khỏi .env sau khi đã hẹn: không rút
+config.payoutEmails.splice(config.payoutEmails.indexOf('pay2@test.com'), 1);
+calls = [];
+const rr = await runWithdraw(2, { manual: true });
+assert.equal(rr.status, 'failed');
+assert.match(rr.message, /danh sách được phép/);
+assert.ok(!calls.some(c => c.name === 'redeem'));
+config.payoutEmails.push('pay2@test.com');
+
 // Acc bị khoá: không rút
 db.prepare("UPDATE accounts SET status = 'banned' WHERE id = 2").run();
 assert.equal((await runWithdraw(2, { manual: true })).status, 'failed');
+
+// Thông tin nhận tiền trên EarnApp bị đổi -> báo ngay
+const syncData = rd => ({ user: { email: 'a@test.com' }, money: { balance: 1, earnings_total: 10, redeem_details: rd },
+  devices: [], statuses: {}, transactions: [], usage: [], usageMonthly: null });
+EarnAppClient.prototype.fetchAll = async () => structuredClone(fake);
+const acc1 = () => db.prepare('SELECT * FROM accounts WHERE id = 1').get();
+fake = syncData(null);
+assert.equal((await syncAccount(acc1())).filter(a => a.type === 'redeem_details_changed').length, 0, 'lần đầu chỉ ghi nhận');
+assert.equal(acc1().redeem_details, '');
+fake = syncData({ email: 'thief@evil.com', payment_method: 'paypal.com', min_redeem: 10 });
+let rdAlerts = (await syncAccount(acc1())).filter(a => a.type === 'redeem_details_changed');
+assert.equal(rdAlerts.length, 1);
+assert.equal(rdAlerts[0].new.email, 'thief@evil.com');
+assert.equal(rdAlerts[0].foreign, true);
+assert.equal((await syncAccount(acc1())).filter(a => a.type === 'redeem_details_changed').length, 0, 'không báo lặp');
+fake = syncData(null);
+rdAlerts = (await syncAccount(acc1())).filter(a => a.type === 'redeem_details_changed');
+assert.equal(rdAlerts[0].new, null, 'tắt auto-redeem cũng báo');
+const rdMsg = formatAlerts([{ ...rdAlerts[0], old: { email: 'a@b.c', payment_method: 'paypal.com' }, new: { email: 'thief@evil.com', payment_method: 'paypal.com' }, foreign: true }], { timezone: TZ, usd_vnd: 26000 });
+assert.match(rdMsg, /vừa bị thay đổi/);
+assert.match(rdMsg, /KHÔNG nằm trong danh sách/);
+
+// Thay đổi lịch -> báo Telegram (luôn báo)
+notifyChange([1], 'lưu lịch rút hằng tuần 15:00 T5', '1.2.3.4');
+assert.ok(sent.some(a => a.type === 'withdraw_changed' && a.ip === '1.2.3.4'));
+assert.match(formatAlerts(sent.filter(a => a.type === 'withdraw_changed'), { timezone: TZ }), /Lịch rút tiền thay đổi[\s\S]*1\.2\.3\.4/);
 
 // Tin Telegram
 const msg = formatAlerts(sent.filter(a => a.type.startsWith('withdraw_')), { timezone: TZ, usd_vnd: 26000 });

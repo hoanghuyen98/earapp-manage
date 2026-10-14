@@ -4,6 +4,7 @@ import { EarnAppClient, AuthError, BannedError, RateLimitError } from './earnapp
 import { sendTelegram, esc } from './telegram.js';
 import { formatAlerts } from './alerts.js';
 import { localDate, summary, addDays, fmtBytes } from './stats.js';
+import { config } from './config.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const money = n => '$' + (n || 0).toFixed(2);
@@ -135,6 +136,19 @@ export async function syncAccount(acc, s = getSettings()) {
     if (acc.error_streak >= Math.max(1, Number(s.error_alert_count) || 3)) {
       addEvent({ account_id: acc.id, type: 'sync_error', level: 'good', message: `${accName(acc)}: lấy dữ liệu bình thường trở lại` });
       if (s.notify_sync_error) alerts.push(A('sync_ok', { count: acc.error_streak }));
+    }
+    // --- Thông tin nhận tiền (Auto-redeem) trên EarnApp: bị đổi thì báo ngay, phòng lộ cookie ---
+    if (m && 'redeem_details' in m) {
+      const rd = m.redeem_details ? { email: String(m.redeem_details.email || ''), payment_method: String(m.redeem_details.payment_method || '') } : null;
+      const json = rd ? JSON.stringify(rd) : '';
+      if (json !== (acc.redeem_details ?? json)) {
+        const old = acc.redeem_details ? JSON.parse(acc.redeem_details) : null;
+        const foreign = !!rd && !config.payoutEmails.includes(rd.email.toLowerCase());
+        addEvent({ account_id: acc.id, type: 'redeem_details', level: rd ? 'critical' : 'info',
+          message: rd ? `${accName(acc)}: thông tin nhận tiền trên EarnApp đổi thành ${rd.payment_method} → ${rd.email}` : `${accName(acc)}: Auto-redeem trên EarnApp đã tắt` });
+        alerts.push(A('redeem_details_changed', { old, new: rd, foreign }));
+      }
+      db.prepare('UPDATE accounts SET redeem_details = ? WHERE id = ?').run(json, acc.id);
     }
     if (acc.backoff_level >= 3) addEvent({ account_id: acc.id, type: 'rate_limit', level: 'good', message: `${accName(acc)}: hết bị giới hạn, đồng bộ bình thường` });
 

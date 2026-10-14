@@ -31,4 +31,6 @@ export const config = {
   // Mật khẩu admin lần đầu (đổi được trong Cài đặt)
   adminUser: process.env.ADMIN_USER || 'admin',
   adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
+  // Email được phép nhận tiền khi rút tự động. Chỉ sửa được trong .env trên máy chủ, không sửa được từ web
+  payoutEmails: [...new Set((process.env.PAYOUT_EMAILS || '').split(/[,;\s]+/).map(e => e.trim().toLowerCase()).filter(Boolean))],
 };

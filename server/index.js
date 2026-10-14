@@ -11,7 +11,7 @@ import { runCycle, startScheduler, syncState, requestSyncAll } from './sync.js';
 import { summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
 import { sendTelegram } from './telegram.js';
 import { overview, report, scopeOptions } from './reports.js';
-import { PAYOUT_METHODS, saveSchedule, runWithdraw, recomputeSchedules, startWithdrawScheduler } from './withdraw.js';
+import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, notifyChange, recomputeSchedules, startWithdrawScheduler } from './withdraw.js';
 
 const app = express();
 app.set('trust proxy', 'loopback');
@@ -243,12 +243,32 @@ app.post('/api/sync', async (req, res) => {
 });
 
 // ---------- Hẹn giờ rút tiền ----------
+// Thao tác có thể làm tiền đi ra ngoài (lưu lịch, bật lịch, rút ngay) phải nhập lại mật khẩu web.
+// Mã 403 (không phải 401) để giao diện không tự đăng xuất khi gõ sai.
+const pwAttempts = new Map();
+function checkPassword(req, res) {
+  const key = req.ip;
+  const a = pwAttempts.get(key) || { n: 0, until: 0 };
+  if (a.until > Date.now()) { res.status(429).json({ error: 'Sai mật khẩu quá nhiều lần, thử lại sau 5 phút' }); return false; }
+  const user = db.prepare('SELECT pw_hash FROM users WHERE username = ?').get(req.user);
+  if (!verifyPassword(String(req.body?.password || ''), user.pw_hash)) {
+    a.n++;
+    if (a.n >= 5) { a.until = Date.now() + 5 * 60e3; a.n = 0; }
+    pwAttempts.set(key, a);
+    res.status(403).json({ error: 'Mật khẩu không đúng' });
+    return false;
+  }
+  pwAttempts.delete(key);
+  return true;
+}
+
 app.get('/api/withdraw', (req, res) => {
   res.json({
     methods: PAYOUT_METHODS,
+    payout_emails: config.payoutEmails,
     timezone: getSettings().timezone,
-    accounts: db.prepare(`SELECT a.id, a.email, a.label, a.group_name, a.balance, a.status, a.auth_state, a.archived_at, w.mode, w.run_date, w.weekdays, w.time,
-        w.method, w.email AS pay_email, w.enabled, w.next_run_at, w.last_run_at, w.last_status, w.last_message
+    accounts: db.prepare(`SELECT a.id, a.email, a.label, a.group_name, a.balance, a.status, a.auth_state, a.archived_at, a.redeem_details,
+        w.mode, w.run_date, w.weekdays, w.time, w.method, w.email AS pay_email, w.enabled, w.next_run_at, w.last_run_at, w.last_status, w.last_message
       FROM accounts a LEFT JOIN withdraw_schedules w ON w.account_id = a.id ORDER BY a.archived_at IS NOT NULL, a.id`).all(),
     log: db.prepare(`SELECT l.*, COALESCE(a.label, a.email) AS account FROM withdraw_log l JOIN accounts a ON a.id = l.account_id ORDER BY l.id DESC LIMIT 100`).all(),
   });
@@ -256,14 +276,13 @@ app.get('/api/withdraw', (req, res) => {
 
 /** Lưu lịch cho 1 hoặc nhiều acc (ids) cùng lúc */
 app.put('/api/withdraw', (req, res) => {
-  const ids = (req.body?.ids || []).map(Number).filter(Boolean);
+  const ids = (req.body?.ids || []).map(Number).filter(id => db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(id));
   if (!ids.length) return res.status(400).json({ error: 'Chưa chọn acc' });
-  try {
-    for (const id of ids) {
-      if (!db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(id)) continue;
-      saveSchedule(id, req.body);
-    }
-  } catch (e) { return res.status(400).json({ error: e.message }); }
+  let sch;
+  try { sch = validateSchedule(req.body); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (!checkPassword(req, res)) return;
+  for (const id of ids) saveSchedule(id, req.body);
+  notifyChange(ids, `lưu lịch rút ${describeSchedule(sch)} qua ${methodLabel(sch.method)} tới ${sch.email}`, req.ip);
   res.json({ ok: true });
 });
 
@@ -271,17 +290,30 @@ app.patch('/api/withdraw/:id', (req, res) => {
   const enabled = req.body?.enabled ? 1 : 0;
   const sch = db.prepare('SELECT * FROM withdraw_schedules WHERE account_id = ?').get(req.params.id);
   if (!sch) return res.status(404).json({ error: 'Không tìm thấy' });
-  try { saveSchedule(sch.account_id, { ...sch, enabled }); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (enabled) {
+    try { validateSchedule({ ...sch, enabled }); } catch (e) { return res.status(400).json({ error: e.message }); }
+    if (!checkPassword(req, res)) return;
+    saveSchedule(sch.account_id, { ...sch, enabled });
+  } else {
+    // Tắt lịch không làm mất tiền: không cần mật khẩu, và luôn tắt được kể cả khi email đã bị gỡ khỏi danh sách
+    db.prepare('UPDATE withdraw_schedules SET enabled = 0, next_run_at = NULL, attempts = 0 WHERE account_id = ?').run(sch.account_id);
+  }
+  notifyChange([sch.account_id], enabled ? `bật lại lịch rút tới ${sch.email}` : 'tắt lịch rút', req.ip);
   res.json({ ok: true });
 });
 
 app.delete('/api/withdraw/:id', (req, res) => {
-  db.prepare('DELETE FROM withdraw_schedules WHERE account_id = ?').run(req.params.id);
+  const r = db.prepare('DELETE FROM withdraw_schedules WHERE account_id = ?').run(req.params.id);
+  if (r.changes) notifyChange([Number(req.params.id)], 'xoá lịch rút', req.ip);
   res.json({ ok: true });
 });
 
 app.post('/api/withdraw/:id/run', async (req, res) => {
-  const r = await runWithdraw(Number(req.params.id), { manual: true });
+  if (!checkPassword(req, res)) return;
+  const id = Number(req.params.id);
+  const sch = db.prepare('SELECT email FROM withdraw_schedules WHERE account_id = ?').get(id);
+  if (sch) notifyChange([id], `bấm Rút ngay tới ${sch.email}`, req.ip);
+  const r = await runWithdraw(id, { manual: true });
   res.status(r.status === 'ok' ? 200 : 400).json(r.status === 'ok' ? r : { ...r, error: r.message });
 });
 

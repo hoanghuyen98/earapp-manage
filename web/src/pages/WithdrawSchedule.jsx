@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CalendarClock, Pencil, Send, Trash2, Info, History } from 'lucide-react';
+import { CalendarClock, Pencil, Send, Trash2, Info, History, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { api, usd, fmtDateTime, timeUntil } from '../lib';
 import { Card, CardHeader, Button, Badge, Modal, Field, Input, Select, Tabs, Toggle, SearchInput, Empty, ConfirmButton, PageLoading, useData, useToast, cx } from '../ui';
+
+// Auto-redeem đang cài trên EarnApp của acc (null = chưa cài)
+const parseRd = a => { try { return a.redeem_details ? JSON.parse(a.redeem_details) : null; } catch { return null; } };
 
 // 0 = Chủ nhật (giống EarnApp / JS)
 const WEEKDAYS = [[1, 'T2'], [2, 'T3'], [3, 'T4'], [4, 'T5'], [5, 'T6'], [6, 'T7'], [0, 'CN']];
@@ -28,7 +31,7 @@ function scheduleText(a) {
   return `Hằng tuần: ${a.time} ${sorted.join(', ')}`;
 }
 
-function ScheduleForm({ open, onClose, targets, methods, timezone, defaultEmail, onSaved }) {
+function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSaved }) {
   const toast = useToast();
   const first = targets[0] || {};
   const tomorrow = new Date(Date.now() + 864e5).toLocaleDateString('en-CA', { timeZone: timezone });
@@ -38,8 +41,9 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, defaultEmail,
     weekdays: first.weekdays ? first.weekdays.split(',').map(Number) : [],
     time: first.time || '10:00',
     method: first.method || methods[0].id,
-    email: first.pay_email || defaultEmail || '',
+    email: emails.includes(first.pay_email) ? first.pay_email : emails[0] || '',
   }));
+  const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   const meta = methods.find(m => m.id === f.method);
@@ -49,7 +53,7 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, defaultEmail,
   const save = async () => {
     setSaving(true);
     try {
-      await api('/withdraw', { method: 'PUT', body: { ...f, ids: targets.map(a => a.id), enabled: true } });
+      await api('/withdraw', { method: 'PUT', body: { ...f, ids: targets.map(a => a.id), enabled: true, password } });
       toast(targets.length > 1 ? `Đã hẹn giờ rút cho ${targets.length} acc` : 'Đã lưu lịch rút');
       onSaved();
       onClose();
@@ -65,7 +69,7 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, defaultEmail,
       subtitle={targets.length > 1 ? `Áp dụng cùng lịch cho ${targets.length} acc đã chọn` : (first.label || first.email)}
       footer={<>
         <Button variant="secondary" onClick={onClose}>Huỷ</Button>
-        <Button icon={CalendarClock} loading={saving} onClick={save}>Lưu lịch</Button>
+        <Button icon={CalendarClock} loading={saving} disabled={!emails.length || !password} onClick={save}>Lưu lịch</Button>
       </>}>
       <div className="space-y-4">
         <Tabs value={f.mode} onChange={v => set('mode', v)} items={[
@@ -102,17 +106,63 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, defaultEmail,
           </Select>
         </Field>
         <Field label={f.method === 'wise.com' ? 'Email tài khoản Wise' : f.method === 'paypal.com' ? 'Email PayPal' : 'Email nhận Gift Card'}>
-          <Input type="email" value={f.email} onChange={e => set('email', e.target.value)} placeholder="email@vidu.com" />
+          {emails.length ? (
+            <Select value={f.email} onChange={e => set('email', e.target.value)}>
+              {emails.map(e => <option key={e} value={e}>{e}</option>)}
+            </Select>
+          ) : <NoEmails />}
         </Field>
+        {targets.some(parseRd) && (
+          <p className="flex gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+            <AlertTriangle className="size-4 shrink-0" />
+            <span>{targets.length > 1 ? 'Có acc' : 'Acc này'} đang bật Auto-redeem trên EarnApp: EarnApp sẽ tự rút lúc 13:00 mỗi ngày, trước cả giờ hẹn. Vào EarnApp → Cashout → Auto-redeem → Disable để chỉ rút theo lịch này.</span>
+          </p>
+        )}
         <div className="flex gap-2.5 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-400">
           <Info className="size-4 shrink-0 text-zinc-400" />
           <div className="space-y-1">
             <p>EarnApp chỉ cho rút <b>toàn bộ số dư</b>. Tới giờ hẹn, web kiểm tra số dư: đủ mức tối thiểu thì rút, chưa đủ thì bỏ qua và báo Telegram.</p>
             <p>Giờ tính theo múi giờ {timezone}. Web phải đang chạy vào giờ hẹn.</p>
+            <p>Email chỉ chọn được trong danh sách PAYOUT_EMAILS ở file .env trên máy chủ. Mỗi lần lưu lịch đều báo Telegram.</p>
             {low.length > 0 && <p className="text-amber-700 dark:text-amber-400">Hiện {targets.length > 1 ? `${low.length} acc` : 'acc này'} chưa đủ {usd(meta.min, 0)}{targets.length === 1 ? ` (số dư ${usd(first.balance)})` : ''}.</p>}
           </div>
         </div>
+        <Field label="Nhập lại mật khẩu web để xác nhận">
+          <Input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" onKeyDown={e => e.key === 'Enter' && password && save()} />
+        </Field>
       </div>
+    </Modal>
+  );
+}
+
+function NoEmails() {
+  return (
+    <div className="rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">
+      Chưa có email nào được phép nhận tiền. Trên máy chủ, mở file .env, thêm dòng
+      <code className="my-1 block font-mono">PAYOUT_EMAILS=email1@gmail.com,email2@gmail.com</code>
+      rồi khởi động lại web.
+    </div>
+  );
+}
+
+/** Hỏi lại mật khẩu trước thao tác có thể làm tiền đi ra ngoài */
+function PasswordPrompt({ ask, onClose }) {
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const go = async () => {
+    setLoading(true);
+    try { await ask.onConfirm(password); onClose(); } catch { /* sai mật khẩu: giữ hộp mở để nhập lại */ } finally { setLoading(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title={ask.title}
+      footer={<>
+        <Button variant="secondary" onClick={onClose}>Huỷ</Button>
+        <Button variant={ask.danger ? 'danger' : 'primary'} loading={loading} disabled={!password} onClick={go}>{ask.confirmLabel}</Button>
+      </>}>
+      <p className="mb-4 text-sm text-zinc-600 dark:text-zinc-300">{ask.message}</p>
+      <Field label="Mật khẩu web">
+        <Input type="password" autoFocus value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" onKeyDown={e => e.key === 'Enter' && password && go()} />
+      </Field>
     </Modal>
   );
 }
@@ -124,6 +174,7 @@ export default function WithdrawSchedule() {
   const [tab, setTab] = useState('all');
   const [selected, setSelected] = useState(new Set());
   const [editing, setEditing] = useState(null); // danh sách acc đang sửa lịch
+  const [ask, setAsk] = useState(null);         // hộp hỏi mật khẩu
 
   const all = useMemo(() => (data?.accounts || []).filter(a => !a.archived_at), [data]);
   const list = useMemo(() => {
@@ -133,7 +184,7 @@ export default function WithdrawSchedule() {
   }, [all, tab, q]);
 
   if (loading && !data) return <PageLoading />;
-  const { methods, timezone, log } = data;
+  const { methods, timezone, log, payout_emails: emails } = data;
   const methodName = id => methods.find(m => m.id === id)?.name || id;
   const on = all.filter(a => a.enabled).length;
   const allSel = list.length > 0 && list.every(a => selected.has(a.id));
@@ -143,9 +194,23 @@ export default function WithdrawSchedule() {
     try { await fn(); if (ok) toast(ok); } catch (e) { toast(e.message, 'error'); }
     reload();
   };
+  // Lỗi thì báo và ném tiếp để hộp mật khẩu không đóng
+  const withPassword = (fn, ok) => async password => {
+    try { await fn(password); toast(ok); } catch (e) { toast(e.message, 'error'); throw e; } finally { reload(); }
+  };
+  const onRd = all.filter(parseRd);
 
   return (
     <>
+      <Card className="mb-4 flex gap-3 p-4 text-[13px] text-zinc-600 dark:text-zinc-400">
+        <ShieldCheck className="size-5 shrink-0 text-emerald-600" />
+        <div className="space-y-1">
+          <p>Tiền chỉ được rút về: <b>{emails.length ? emails.join(', ') : 'chưa cài (PAYOUT_EMAILS trong .env)'}</b>. Danh sách này chỉ sửa được trong file .env trên máy chủ.</p>
+          <p>Lưu lịch, bật lịch và Rút ngay đều phải nhập lại mật khẩu web và đều được báo Telegram kèm IP. Thông tin nhận tiền trên EarnApp của acc nào bị đổi, web cũng báo ngay.</p>
+          {onRd.length > 0 && <p className="text-amber-700 dark:text-amber-400">⚠ {onRd.length} acc đang bật Auto-redeem trên EarnApp: EarnApp tự rút lúc 13:00 mỗi ngày, không theo lịch ở đây.</p>}
+        </div>
+      </Card>
+
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onChange={setTab} items={[
           { value: 'all', label: 'Tất cả acc', count: all.length },
@@ -179,6 +244,11 @@ export default function WithdrawSchedule() {
                           <Link to={`/accounts/${a.id}`} className="truncate font-medium hover:text-indigo-600 hover:underline">{a.label || a.email}</Link>
                           <span className="text-sm tabular text-zinc-500">{usd(a.balance)}</span>
                           {a.status === 'banned' && <Badge className={RESULT.failed.cls}>Bị khoá</Badge>}
+                          {parseRd(a) && (
+                            <span title="EarnApp tự rút toàn bộ số dư lúc 13:00 mỗi ngày tới email này">
+                              <Badge className={emails.includes(parseRd(a).email.toLowerCase()) ? RESULT.skipped.cls : RESULT.failed.cls}>Auto-redeem EarnApp → {parseRd(a).email}</Badge>
+                            </span>
+                          )}
                         </div>
                         {a.mode ? (
                           <div className="mt-0.5 text-[13px] text-zinc-600 dark:text-zinc-400">
@@ -198,14 +268,17 @@ export default function WithdrawSchedule() {
                     <div className="flex shrink-0 items-center gap-1 pl-7 lg:pl-0">
                       {a.mode && (
                         <div className="mr-1" title={a.enabled ? 'Đang bật, bấm để tắt' : 'Đang tắt, bấm để bật'}>
-                          <Toggle checked={!!a.enabled} onChange={v => act(() => api(`/withdraw/${a.id}`, { method: 'PATCH', body: { enabled: v } }), v ? 'Đã bật lịch rút' : 'Đã tắt lịch rút')} />
+                          <Toggle checked={!!a.enabled} onChange={v => v
+                            ? setAsk({ title: 'Bật lại lịch rút?', confirmLabel: 'Bật lịch', message: `${scheduleText(a)} qua ${methodName(a.method)} tới ${a.pay_email}.`,
+                              onConfirm: withPassword(password => api(`/withdraw/${a.id}`, { method: 'PATCH', body: { enabled: true, password } }), 'Đã bật lịch rút') })
+                            : act(() => api(`/withdraw/${a.id}`, { method: 'PATCH', body: { enabled: false } }), 'Đã tắt lịch rút')} />
                         </div>
                       )}
                       <Button size="sm" variant="secondary" icon={Pencil} onClick={() => setEditing([a])}>{a.mode ? 'Sửa' : 'Hẹn giờ'}</Button>
                       {a.mode && (
-                        <ConfirmButton size="sm" variant="ghost" icon={Send} title="Rút ngay bây giờ?" confirmLabel="Rút ngay"
-                          message={`Rút toàn bộ số dư (${usd(a.balance)}) của ${a.label || a.email} qua ${methodName(a.method)} tới ${a.pay_email}. Không huỷ được sau khi gửi.`}
-                          onConfirm={() => act(() => api(`/withdraw/${a.id}/run`, { method: 'POST' }), 'Đã gửi lệnh rút')}>Rút ngay</ConfirmButton>
+                        <Button size="sm" variant="ghost" icon={Send} onClick={() => setAsk({ title: 'Rút ngay bây giờ?', confirmLabel: 'Rút ngay', danger: true,
+                          message: `Rút toàn bộ số dư (${usd(a.balance)}) của ${a.label || a.email} qua ${methodName(a.method)} tới ${a.pay_email}. Không huỷ được sau khi gửi.`,
+                          onConfirm: withPassword(password => api(`/withdraw/${a.id}/run`, { method: 'POST', body: { password } }), 'Đã gửi lệnh rút') })}>Rút ngay</Button>
                       )}
                       {a.mode && (
                         <ConfirmButton size="icon" variant="ghost" icon={Trash2} title="Xoá lịch rút?" message="Xoá lịch hẹn và thông tin nhận tiền của acc này."
@@ -240,9 +313,10 @@ export default function WithdrawSchedule() {
       </Card>
 
       {editing && (
-        <ScheduleForm open targets={editing} methods={methods} timezone={timezone} defaultEmail={all.find(a => a.pay_email)?.pay_email} onClose={() => setEditing(null)}
+        <ScheduleForm open targets={editing} methods={methods} timezone={timezone} emails={emails} onClose={() => setEditing(null)}
           onSaved={() => { setSelected(new Set()); reload(); }} />
       )}
+      {ask && <PasswordPrompt ask={ask} onClose={() => setAsk(null)} />}
     </>
   );
 }

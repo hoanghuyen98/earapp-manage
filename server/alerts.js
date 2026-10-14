@@ -7,7 +7,7 @@ const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise:
 const methodName = m => METHOD[m] || (/^amazon/.test(m || '') ? 'Amazon Gift Card' : m || '—');
 
 // Thứ tự hiển thị: việc nghiêm trọng / cần xử lý lên trước
-const ORDER = ['account_banned', 'account_suspect', 'auth', 'withdraw_failed', 'withdraw_skipped', 'withdraw_ok', 'sync_error', 'device_banned', 'device_offline', 'device_idle',
+const ORDER = ['redeem_details_changed', 'withdraw_changed', 'account_banned', 'account_suspect', 'auth', 'withdraw_failed', 'withdraw_skipped', 'withdraw_ok', 'sync_error', 'device_banned', 'device_offline', 'device_idle',
   'rate_limit', 'payout_paid', 'payout_new', 'sync_ok', 'device_online', 'device_unbanned'];
 
 const LIST_MAX = 10;
@@ -81,6 +81,19 @@ export function formatAlerts(list, s) {
           break;
         case 'payout_new':
           for (const a of g) parts.push(`💸 <b>Lệnh rút mới</b>: ${usd(a.amount)} qua ${esc(methodName(a.method))}, đang chờ EarnApp xử lý.`);
+          break;
+        case 'redeem_details_changed': {
+          const fmt = d => d ? `${esc(methodName(d.payment_method))} → ${esc(d.email)}` : 'chưa cài';
+          parts.push(first.new
+            ? `🚨 <b>Thông tin nhận tiền trên EarnApp vừa bị thay đổi</b>\nCũ: ${fmt(first.old)}\nMới: <b>${fmt(first.new)}</b>`
+              + (first.foreign ? '\n⚠️ Email mới KHÔNG nằm trong danh sách email của bạn.' : '')
+              + '\nEarnApp sẽ tự rút toàn bộ số dư tới email mới lúc 13:00 mỗi ngày, kể cả trước giờ hẹn trên web.'
+              + '\n👉 Nếu không phải bạn đổi: vào EarnApp → Cashout → Auto-redeem → Disable Auto-Redeem ngay, rồi đổi mật khẩu Google của acc.'
+            : `ℹ️ <b>Auto-redeem trên EarnApp đã được tắt</b> (trước đó: ${fmt(first.old)}).`);
+          break;
+        }
+        case 'withdraw_changed':
+          for (const a of g) parts.push(`🛡 <b>Lịch rút tiền thay đổi</b>: ${esc(a.why)}\nTừ IP ${esc(a.ip)}. 👉 Nếu không phải bạn: đổi mật khẩu web ngay (Cài đặt → Đổi mật khẩu).`);
           break;
         case 'withdraw_ok':
           parts.push(`💰 <b>Đã tạo lệnh rút</b>: ${usd(first.amount)} (≈ ${vnd(first.amount)}) qua ${esc(methodName(first.method))} tới ${esc(first.to)}. Lệnh đang chờ EarnApp duyệt.`);

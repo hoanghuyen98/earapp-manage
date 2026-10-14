@@ -1,4 +1,5 @@
 import { db, getSettings, addEvent } from './db.js';
+import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { EarnAppClient, AuthError, NetworkError, RateLimitError } from './earnapp.js';
 import { localDate, addDays } from './stats.js';
@@ -22,6 +23,9 @@ export const methodLabel = id => PAYOUT_METHODS.find(m => m.id === id)?.name || 
 const RETRY_MAX = 3;            // lỗi mạng / bị giới hạn: thử lại tối đa 3 lần
 const RETRY_GAP = 10 * 60e3;    // cách nhau 10 phút
 const LATE_MAX = 24 * 3600e3;   // server tắt quá 24h làm lỡ giờ hẹn thì bỏ qua lần đó, không rút vào giờ bất kỳ
+export const payoutAllowed = email => config.payoutEmails.includes(String(email || '').trim().toLowerCase());
+const NOT_ALLOWED = 'Email nhận tiền không nằm trong danh sách được phép (PAYOUT_EMAILS trong file .env trên máy chủ)';
+
 const money = n => '$' + (Number(n) || 0).toFixed(2);
 const accName = a => a.label || a.email || `Acc #${a.id}`;
 
@@ -76,7 +80,9 @@ export function validateSchedule(b, now = Date.now(), tz = getSettings().timezon
   };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(sch.time)) throw new Error('Giờ rút không hợp lệ (VD: 10:00)');
   if (!PAYOUT_METHODS.some(m => m.id === sch.method)) throw new Error('Chưa chọn phương thức rút');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sch.email)) throw new Error('Email nhận tiền không hợp lệ');
+  if (!config.payoutEmails.length) throw new Error('Chưa cài danh sách email nhận tiền: thêm PAYOUT_EMAILS vào file .env trên máy chủ rồi khởi động lại web');
+  if (!payoutAllowed(sch.email)) throw new Error(NOT_ALLOWED);
+  sch.email = sch.email.toLowerCase();
   if (sch.mode === 'once') {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sch.run_date)) throw new Error('Chưa chọn ngày rút');
     if (sch.enabled && zonedTs(sch.run_date, sch.time, tz) <= now) throw new Error('Thời điểm rút đã qua, chọn ngày giờ khác');
@@ -85,6 +91,13 @@ export function validateSchedule(b, now = Date.now(), tz = getSettings().timezon
   }
   sch.next_run_at = sch.enabled ? nextRunAt(sch, now, tz) : null;
   return sch;
+}
+
+const WD = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+/** "1 lần 10:00 14/10/2026" / "hằng tuần 15:00 T5" */
+export function describeSchedule(sch) {
+  if (sch.mode === 'once') return `1 lần ${sch.time} ${sch.run_date.split('-').reverse().join('/')}`;
+  return `hằng tuần ${sch.time} ${parseWeekdays(sch.weekdays).sort((x, y) => (x || 7) - (y || 7)).map(d => WD[d]).join(', ')}`;
 }
 
 export function saveSchedule(accountId, body) {
@@ -109,6 +122,8 @@ function log(acc, sch, status, message, amount = null) {
 async function redeem(acc, sch) {
   if (acc.archived_at) return { status: 'failed', message: 'Acc đang lưu trữ' };
   if (acc.status === 'banned') return { status: 'failed', message: 'Acc đã bị khoá' };
+  // Kiểm tra lại lúc rút: email bị gỡ khỏi .env sau khi hẹn thì không rút
+  if (!payoutAllowed(sch.email)) return { status: 'failed', message: NOT_ALLOWED };
   const client = new EarnAppClient(decrypt(acc.cookie_enc), acc.proxy);
   const m = await client.call('money');
   const balance = Number(m.balance) || 0;
@@ -178,6 +193,19 @@ async function runLocked(accountId, manual) {
   // Lấy dữ liệu acc sớm để thấy lệnh rút mới trong mục Rút tiền
   if (res.status === 'ok') db.prepare('UPDATE accounts SET next_sync_at = ? WHERE id = ?').run(now + 90e3, acc.id);
   return res;
+}
+
+/** Báo Telegram ngay mỗi khi lịch rút bị tạo / sửa / bật / tắt / xoá hoặc bấm Rút ngay (bất kể cài đặt thông báo) */
+export function notifyChange(accountIds, what, ip) {
+  const s = getSettings();
+  const now = Date.now();
+  for (const id of accountIds) {
+    const acc = db.prepare('SELECT id, label, email FROM accounts WHERE id = ?').get(id);
+    if (!acc) continue;
+    addEvent({ account_id: acc.id, type: 'withdraw_changed', level: 'warning', message: `${accName(acc)}: ${what} (IP ${ip})` });
+    alertQueue.push({ type: 'withdraw_changed', ts: now, account_id: acc.id, label: acc.label, email: acc.email, why: what, ip });
+  }
+  flushAlerts(s).catch(() => {});
 }
 
 /** Gọi mỗi 30 giây: chạy các lịch đã tới giờ */

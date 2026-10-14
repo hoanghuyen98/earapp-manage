@@ -197,6 +197,7 @@ addColumn('device_daily', 'online_n', 'INTEGER NOT NULL DEFAULT 0');  // số l�
 addColumn('accounts', 'empty_status_streak', 'INTEGER NOT NULL DEFAULT 0'); // số lần liên tiếp EarnApp trả trạng thái máy rỗng
 addColumn('accounts', 'error_streak', 'INTEGER NOT NULL DEFAULT 0');  // số lần lấy dữ liệu lỗi liên tiếp (mạng, proxy…)
 addColumn('accounts', 'archived_at', 'INTEGER');
+addColumn('accounts', 'redeem_details', 'TEXT'); // Auto-redeem cài trên EarnApp: JSON {email, payment_method}, '' = chưa cài, NULL = chưa biết
 addColumn('users', 'session_ver', 'INTEGER NOT NULL DEFAULT 0'); // tăng lên thì mọi phiên đăng nhập cũ hết hiệu lực                      // đã lưu trữ: ngừng theo dõi nhưng giữ số liệu
 
 // Bỏ chế độ chỉnh tay Running/Stopped (bản cũ): đưa về tự động theo máy
