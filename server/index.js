@@ -278,11 +278,18 @@ app.get('/api/withdraw', (req, res) => {
 app.put('/api/withdraw', (req, res) => {
   const ids = (req.body?.ids || []).map(Number).filter(id => db.prepare('SELECT 1 FROM accounts WHERE id = ?').get(id));
   if (!ids.length) return res.status(400).json({ error: 'Chưa chọn acc' });
-  let sch;
-  try { sch = validateSchedule(req.body); } catch (e) { return res.status(400).json({ error: e.message }); }
+  // Kiểm tra hết các acc trước (mỗi acc có email đăng ký riêng), sai 1 acc thì không lưu acc nào
+  try {
+    for (const id of ids) {
+      const acc = db.prepare('SELECT id, label, email FROM accounts WHERE id = ?').get(id);
+      try { validateSchedule(req.body, Date.now(), getSettings().timezone, acc.email); } catch (e) { throw new Error(`${acc.label || acc.email || '#' + id}: ${e.message}`); }
+    }
+  } catch (e) { return res.status(400).json({ error: e.message }); }
   if (!checkPassword(req, res)) return;
-  for (const id of ids) saveSchedule(id, req.body);
-  notifyChange(ids, `lưu lịch rút ${describeSchedule(sch)} qua ${methodLabel(sch.method)} tới ${sch.email}`, req.ip);
+  for (const id of ids) {
+    const sch = saveSchedule(id, req.body);
+    notifyChange([id], `lưu lịch rút ${describeSchedule(sch)} qua ${methodLabel(sch.method)} tới ${sch.email}`, req.ip);
+  }
   res.json({ ok: true });
 });
 
@@ -291,7 +298,8 @@ app.patch('/api/withdraw/:id', (req, res) => {
   const sch = db.prepare('SELECT * FROM withdraw_schedules WHERE account_id = ?').get(req.params.id);
   if (!sch) return res.status(404).json({ error: 'Không tìm thấy' });
   if (enabled) {
-    try { validateSchedule({ ...sch, enabled }); } catch (e) { return res.status(400).json({ error: e.message }); }
+    const own = db.prepare('SELECT email FROM accounts WHERE id = ?').get(sch.account_id)?.email;
+    try { validateSchedule({ ...sch, enabled }, Date.now(), getSettings().timezone, own); } catch (e) { return res.status(400).json({ error: e.message }); }
     if (!checkPassword(req, res)) return;
     saveSchedule(sch.account_id, { ...sch, enabled });
   } else {

@@ -143,7 +143,7 @@ export async function syncAccount(acc, s = getSettings()) {
       const json = rd ? JSON.stringify(rd) : '';
       if (json !== (acc.redeem_details ?? json)) {
         const old = acc.redeem_details ? JSON.parse(acc.redeem_details) : null;
-        const foreign = !!rd && !config.payoutEmails.includes(rd.email.toLowerCase());
+        const foreign = !!rd && rd.email.toLowerCase() !== String(user.email || acc.email || '').toLowerCase() && !config.payoutEmails.includes(rd.email.toLowerCase());
         addEvent({ account_id: acc.id, type: 'redeem_details', level: rd ? 'critical' : 'info',
           message: rd ? `${accName(acc)}: thông tin nhận tiền trên EarnApp đổi thành ${rd.payment_method} → ${rd.email}` : `${accName(acc)}: Auto-redeem trên EarnApp đã tắt` });
         alerts.push(A('redeem_details_changed', { old, new: rd, foreign }));

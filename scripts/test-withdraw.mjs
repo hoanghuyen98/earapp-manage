@@ -38,9 +38,14 @@ assert.equal(nextRunAt({ mode: 'once', run_date: '2026-10-14', time: '08:00' }, 
 // ---- Kiểm tra dữ liệu nhập ----
 const base = { mode: 'weekly', weekdays: [3], time: '10:00', method: 'paypal.com', email: 'me@paypal.com' };
 assert.throws(() => validateSchedule({ ...base, time: '25:00' }, wed9, TZ), /Giờ rút/);
-assert.throws(() => validateSchedule({ ...base, email: 'abc' }, wed9, TZ), /danh sách được phép/);
-assert.throws(() => validateSchedule({ ...base, email: 'hacker@evil.com' }, wed9, TZ), /danh sách được phép/, 'email ngoài .env bị chặn');
+assert.throws(() => validateSchedule({ ...base, email: 'abc' }, wed9, TZ), /email đăng ký của acc/);
+assert.throws(() => validateSchedule({ ...base, email: 'hacker@evil.com' }, wed9, TZ), /email đăng ký của acc/, 'email ngoài .env bị chặn');
 assert.equal(validateSchedule({ ...base, email: ' PAY1@test.com ' }, wed9, TZ).email, 'pay1@test.com', 'không phân biệt hoa thường');
+// Email đăng ký của chính acc luôn được phép, kể cả không có trong .env
+assert.equal(validateSchedule({ ...base, email: '__own__' }, wed9, TZ, 'Owner@Gmail.com').email, 'owner@gmail.com');
+assert.equal(validateSchedule({ ...base, email: 'owner@gmail.com' }, wed9, TZ, 'Owner@Gmail.com').email, 'owner@gmail.com');
+assert.throws(() => validateSchedule({ ...base, email: 'other@gmail.com' }, wed9, TZ, 'owner@gmail.com'), /email đăng ký của acc/, 'email acc khác bị chặn');
+assert.throws(() => validateSchedule({ ...base, email: '__own__' }, wed9, TZ, ''), /chưa có email/);
 assert.equal(describeSchedule({ mode: 'weekly', weekdays: '0,4,1', time: '15:00' }), 'hằng tuần 15:00 T2, T5, CN');
 assert.equal(describeSchedule({ mode: 'once', run_date: '2026-10-14', time: '10:00' }), '1 lần 10:00 14/10/2026');
 assert.throws(() => validateSchedule({ ...base, method: 'x' }, wed9, TZ), /phương thức/);
@@ -150,9 +155,17 @@ config.payoutEmails.splice(config.payoutEmails.indexOf('pay2@test.com'), 1);
 calls = [];
 const rr = await runWithdraw(2, { manual: true });
 assert.equal(rr.status, 'failed');
-assert.match(rr.message, /danh sách được phép/);
+assert.match(rr.message, /email đăng ký của acc/);
 assert.ok(!calls.some(c => c.name === 'redeem'));
 config.payoutEmails.push('pay2@test.com');
+
+// Rút về email đăng ký của acc (không cần có trong .env)
+calls = [];
+saveSchedule(2, { mode: 'weekly', weekdays: [4], time: '15:00', method: 'paypal.com', email: '__own__' });
+assert.equal(sch(2).email, 'b@test.com');
+fake = { balance: 15 };
+assert.equal((await runWithdraw(2, { manual: true })).status, 'ok');
+assert.deepEqual(calls.find(c => c.name === 'redeem').body, { to: 'b@test.com', payment_method: 'paypal.com' });
 
 // Acc bị khoá: không rút
 db.prepare("UPDATE accounts SET status = 'banned' WHERE id = 2").run();

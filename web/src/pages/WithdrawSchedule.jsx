@@ -5,6 +5,7 @@ import { api, usd, fmtDateTime, timeUntil } from '../lib';
 import { Card, CardHeader, Button, Badge, Modal, Field, Input, Select, Tabs, Toggle, SearchInput, Empty, ConfirmButton, PageLoading, useData, useToast, cx } from '../ui';
 
 // Auto-redeem đang cài trên EarnApp của acc (null = chưa cài)
+const OWN = '__own__';
 const parseRd = a => { try { return a.redeem_details ? JSON.parse(a.redeem_details) : null; } catch { return null; } };
 
 // 0 = Chủ nhật (giống EarnApp / JS)
@@ -41,7 +42,8 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
     weekdays: first.weekdays ? first.weekdays.split(',').map(Number) : [],
     time: first.time || '10:00',
     method: first.method || methods[0].id,
-    email: emails.includes(first.pay_email) ? first.pay_email : emails[0] || '',
+    // Mặc định: email đăng ký của từng acc
+    email: targets.length === 1 && first.pay_email && first.pay_email !== first.email?.toLowerCase() && emails.includes(first.pay_email) ? first.pay_email : OWN,
   }));
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
@@ -69,7 +71,7 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
       subtitle={targets.length > 1 ? `Áp dụng cùng lịch cho ${targets.length} acc đã chọn` : (first.label || first.email)}
       footer={<>
         <Button variant="secondary" onClick={onClose}>Huỷ</Button>
-        <Button icon={CalendarClock} loading={saving} disabled={!emails.length || !password} onClick={save}>Lưu lịch</Button>
+        <Button icon={CalendarClock} loading={saving} disabled={!password} onClick={save}>Lưu lịch</Button>
       </>}>
       <div className="space-y-4">
         <Tabs value={f.mode} onChange={v => set('mode', v)} items={[
@@ -106,11 +108,10 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
           </Select>
         </Field>
         <Field label={f.method === 'wise.com' ? 'Email tài khoản Wise' : f.method === 'paypal.com' ? 'Email PayPal' : 'Email nhận Gift Card'}>
-          {emails.length ? (
-            <Select value={f.email} onChange={e => set('email', e.target.value)}>
-              {emails.map(e => <option key={e} value={e}>{e}</option>)}
-            </Select>
-          ) : <NoEmails />}
+          <Select value={f.email} onChange={e => set('email', e.target.value)}>
+            <option value={OWN}>{targets.length > 1 ? 'Email đăng ký của từng acc' : `Email đăng ký của acc: ${first.email}`}</option>
+            {emails.map(e => <option key={e} value={e}>{e}</option>)}
+          </Select>
         </Field>
         {targets.some(parseRd) && (
           <p className="flex gap-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
@@ -123,7 +124,8 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
           <div className="space-y-1">
             <p>EarnApp chỉ cho rút <b>toàn bộ số dư</b>. Tới giờ hẹn, web kiểm tra số dư: đủ mức tối thiểu thì rút, chưa đủ thì bỏ qua và báo Telegram.</p>
             <p>Giờ tính theo múi giờ {timezone}. Web phải đang chạy vào giờ hẹn.</p>
-            <p>Email chỉ chọn được trong danh sách PAYOUT_EMAILS ở file .env trên máy chủ. Mỗi lần lưu lịch đều báo Telegram.</p>
+            {f.email === OWN && <p>Mỗi acc rút về đúng email đã đăng ký acc đó. Kiểm tra email này có tài khoản {meta.name.split(' ')[0]} chưa, nếu chưa thì tiền sẽ bị treo.</p>}
+            <p>Muốn rút về email khác, thêm email đó vào PAYOUT_EMAILS ở file .env trên máy chủ. Mỗi lần lưu lịch đều báo Telegram.</p>
             {low.length > 0 && <p className="text-amber-700 dark:text-amber-400">Hiện {targets.length > 1 ? `${low.length} acc` : 'acc này'} chưa đủ {usd(meta.min, 0)}{targets.length === 1 ? ` (số dư ${usd(first.balance)})` : ''}.</p>}
           </div>
         </div>
@@ -132,16 +134,6 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
         </Field>
       </div>
     </Modal>
-  );
-}
-
-function NoEmails() {
-  return (
-    <div className="rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">
-      Chưa có email nào được phép nhận tiền. Trên máy chủ, mở file .env, thêm dòng
-      <code className="my-1 block font-mono">PAYOUT_EMAILS=email1@gmail.com,email2@gmail.com</code>
-      rồi khởi động lại web.
-    </div>
   );
 }
 
@@ -205,7 +197,7 @@ export default function WithdrawSchedule() {
       <Card className="mb-4 flex gap-3 p-4 text-[13px] text-zinc-600 dark:text-zinc-400">
         <ShieldCheck className="size-5 shrink-0 text-emerald-600" />
         <div className="space-y-1">
-          <p>Tiền chỉ được rút về: <b>{emails.length ? emails.join(', ') : 'chưa cài (PAYOUT_EMAILS trong .env)'}</b>. Danh sách này chỉ sửa được trong file .env trên máy chủ.</p>
+          <p>Mỗi acc chỉ được rút về <b>email đăng ký của chính acc đó</b>{emails.length ? <> hoặc <b>{emails.join(', ')}</b></> : null}. Email khác phải thêm vào PAYOUT_EMAILS trong file .env trên máy chủ.</p>
           <p>Lưu lịch, bật lịch và Rút ngay đều phải nhập lại mật khẩu web và đều được báo Telegram kèm IP. Thông tin nhận tiền trên EarnApp của acc nào bị đổi, web cũng báo ngay.</p>
           {onRd.length > 0 && <p className="text-amber-700 dark:text-amber-400">⚠ {onRd.length} acc đang bật Auto-redeem trên EarnApp: EarnApp tự rút lúc 13:00 mỗi ngày, không theo lịch ở đây.</p>}
         </div>
@@ -246,7 +238,7 @@ export default function WithdrawSchedule() {
                           {a.status === 'banned' && <Badge className={RESULT.failed.cls}>Bị khoá</Badge>}
                           {parseRd(a) && (
                             <span title="EarnApp tự rút toàn bộ số dư lúc 13:00 mỗi ngày tới email này">
-                              <Badge className={emails.includes(parseRd(a).email.toLowerCase()) ? RESULT.skipped.cls : RESULT.failed.cls}>Auto-redeem EarnApp → {parseRd(a).email}</Badge>
+                              <Badge className={[...emails, a.email?.toLowerCase()].includes(parseRd(a).email.toLowerCase()) ? RESULT.skipped.cls : RESULT.failed.cls}>Auto-redeem EarnApp → {parseRd(a).email}</Badge>
                             </span>
                           )}
                         </div>

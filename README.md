@@ -15,7 +15,8 @@ Web theo dõi nhiều tài khoản EarnApp: trạng thái máy theo thời gian 
 - **Rút tiền:** lịch sử rút và lệnh rút đang chờ của tất cả acc.
 - **Hẹn giờ rút tự động** (Rút tiền → Hẹn giờ rút tự động): mỗi acc 1 lịch, rút 1 lần vào ngày giờ cụ thể (VD 10:00 T4 14/10) hoặc lặp lại hằng tuần (VD 15:00 mỗi T5).
   - Chọn PayPal / Wise / Amazon và email nhận tiền. Chọn nhiều acc để hẹn cùng một lịch.
-  - **Bảo vệ:** email nhận tiền chỉ chọn được trong `PAYOUT_EMAILS` ở file `.env` trên máy chủ (sửa xong phải khởi động lại web). Lưu lịch, bật lịch, Rút ngay phải nhập lại mật khẩu web. Mọi thay đổi lịch đều báo Telegram kèm IP.
+  - Mặc định mỗi acc rút về **email đăng ký của chính acc đó** (lấy từ EarnApp, không sửa được trên web). Hẹn nhiều acc cùng lúc thì mỗi acc tự rút về email của nó.
+  - **Bảo vệ:** muốn rút về email khác thì email đó phải nằm trong `PAYOUT_EMAILS` ở file `.env` trên máy chủ (sửa xong phải khởi động lại web). Lưu lịch, bật lịch, Rút ngay phải nhập lại mật khẩu web. Mọi thay đổi lịch đều báo Telegram kèm IP.
   - Web báo Telegram ngay khi thông tin nhận tiền (Auto-redeem) trên EarnApp của acc bị đổi. **Không bật Auto-redeem trên EarnApp** nếu dùng hẹn giờ: EarnApp sẽ tự rút lúc 13:00 (giờ VN) mỗi ngày.
   - EarnApp chỉ cho rút **toàn bộ số dư**, tối thiểu PayPal/Wise $10, Amazon $50. Chưa đủ thì web bỏ qua lần đó và báo Telegram.
   - Lỗi mạng / proxy thì thử lại sau 10 phút (tối đa 3 lần). Web tắt quá 24h làm lỡ giờ hẹn thì bỏ qua, không rút bù vào giờ khác.

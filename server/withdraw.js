@@ -23,8 +23,12 @@ export const methodLabel = id => PAYOUT_METHODS.find(m => m.id === id)?.name || 
 const RETRY_MAX = 3;            // lỗi mạng / bị giới hạn: thử lại tối đa 3 lần
 const RETRY_GAP = 10 * 60e3;    // cách nhau 10 phút
 const LATE_MAX = 24 * 3600e3;   // server tắt quá 24h làm lỡ giờ hẹn thì bỏ qua lần đó, không rút vào giờ bất kỳ
-export const payoutAllowed = email => config.payoutEmails.includes(String(email || '').trim().toLowerCase());
-const NOT_ALLOWED = 'Email nhận tiền không nằm trong danh sách được phép (PAYOUT_EMAILS trong file .env trên máy chủ)';
+// Email được nhận tiền của 1 acc: email đăng ký của chính acc đó (lấy từ EarnApp, web không sửa được)
+// hoặc email trong PAYOUT_EMAILS ở .env trên máy chủ
+export const OWN_EMAIL = '__own__';
+const norm = e => String(e || '').trim().toLowerCase();
+export const payoutAllowed = (email, ownEmail = '') => !!norm(email) && (norm(email) === norm(ownEmail) || config.payoutEmails.includes(norm(email)));
+const NOT_ALLOWED = 'Email nhận tiền phải là email đăng ký của acc, hoặc nằm trong PAYOUT_EMAILS ở file .env trên máy chủ';
 
 const money = n => '$' + (Number(n) || 0).toFixed(2);
 const accName = a => a.label || a.email || `Acc #${a.id}`;
@@ -68,21 +72,20 @@ export function nextRunAt(sch, after, tz) {
 }
 
 /** Kiểm tra dữ liệu lịch người dùng nhập. Trả về lịch đã chuẩn hoá, sai thì báo lỗi */
-export function validateSchedule(b, now = Date.now(), tz = getSettings().timezone) {
+export function validateSchedule(b, now = Date.now(), tz = getSettings().timezone, ownEmail = '') {
   const sch = {
     mode: b.mode === 'once' ? 'once' : 'weekly',
     run_date: b.mode === 'once' ? String(b.run_date || '') : null,
     weekdays: b.mode === 'once' ? '' : [...new Set(parseWeekdays(Array.isArray(b.weekdays) ? b.weekdays.join(',') : b.weekdays))].sort().join(','),
     time: String(b.time || ''),
     method: String(b.method || ''),
-    email: String(b.email || '').trim(),
+    email: b.email === OWN_EMAIL ? norm(ownEmail) : norm(b.email),
     enabled: b.enabled === false ? 0 : 1,
   };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(sch.time)) throw new Error('Giờ rút không hợp lệ (VD: 10:00)');
   if (!PAYOUT_METHODS.some(m => m.id === sch.method)) throw new Error('Chưa chọn phương thức rút');
-  if (!config.payoutEmails.length) throw new Error('Chưa cài danh sách email nhận tiền: thêm PAYOUT_EMAILS vào file .env trên máy chủ rồi khởi động lại web');
-  if (!payoutAllowed(sch.email)) throw new Error(NOT_ALLOWED);
-  sch.email = sch.email.toLowerCase();
+  if (!sch.email) throw new Error('Acc chưa có email đăng ký (chưa lấy được dữ liệu từ EarnApp)');
+  if (!payoutAllowed(sch.email, ownEmail)) throw new Error(NOT_ALLOWED);
   if (sch.mode === 'once') {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(sch.run_date)) throw new Error('Chưa chọn ngày rút');
     if (sch.enabled && zonedTs(sch.run_date, sch.time, tz) <= now) throw new Error('Thời điểm rút đã qua, chọn ngày giờ khác');
@@ -101,7 +104,8 @@ export function describeSchedule(sch) {
 }
 
 export function saveSchedule(accountId, body) {
-  const sch = validateSchedule(body);
+  const own = db.prepare('SELECT email FROM accounts WHERE id = ?').get(accountId)?.email;
+  const sch = validateSchedule(body, Date.now(), getSettings().timezone, own);
   db.prepare(`INSERT INTO withdraw_schedules(account_id, mode, run_date, weekdays, time, method, email, enabled, next_run_at, attempts, created_at)
       VALUES (@account_id, @mode, @run_date, @weekdays, @time, @method, @email, @enabled, @next_run_at, 0, @now)
     ON CONFLICT(account_id) DO UPDATE SET mode = excluded.mode, run_date = excluded.run_date, weekdays = excluded.weekdays, time = excluded.time,
@@ -123,7 +127,7 @@ async function redeem(acc, sch) {
   if (acc.archived_at) return { status: 'failed', message: 'Acc đang lưu trữ' };
   if (acc.status === 'banned') return { status: 'failed', message: 'Acc đã bị khoá' };
   // Kiểm tra lại lúc rút: email bị gỡ khỏi .env sau khi hẹn thì không rút
-  if (!payoutAllowed(sch.email)) return { status: 'failed', message: NOT_ALLOWED };
+  if (!payoutAllowed(sch.email, acc.email)) return { status: 'failed', message: NOT_ALLOWED };
   const client = new EarnAppClient(decrypt(acc.cookie_enc), acc.proxy);
   const m = await client.call('money');
   const balance = Number(m.balance) || 0;
