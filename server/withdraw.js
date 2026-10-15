@@ -3,7 +3,8 @@ import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { EarnAppClient, AuthError, NetworkError, RateLimitError } from './earnapp.js';
 import { localDate, addDays } from './stats.js';
-import { withLock, alertQueue, flushAlerts } from './sync.js';
+import { withLock, alertQueue } from './sync.js';
+import { fullName } from './accname.js';
 
 // ================== Hẹn giờ rút tiền tự động ==================
 // EarnApp chỉ cho rút TOÀN BỘ số dư: POST /api/redeem {to, payment_method}.
@@ -31,7 +32,8 @@ export const payoutAllowed = (email, ownEmail = '') => !!norm(email) && (norm(em
 const NOT_ALLOWED = 'Email nhận tiền phải là email đăng ký của acc, hoặc nằm trong PAYOUT_EMAILS ở file .env trên máy chủ';
 
 const money = n => '$' + (Number(n) || 0).toFixed(2);
-const accName = a => a.label || a.email || `Acc #${a.id}`;
+export const cleanIp = ip => String(ip || '').replace(/^::ffff:/, '');
+const accName = fullName;
 
 // ---------- Giờ theo múi giờ cài đặt ----------
 function tzOffset(ts, tz) {
@@ -96,6 +98,15 @@ export function validateSchedule(b, now = Date.now(), tz = getSettings().timezon
   return sch;
 }
 
+/** Rút ngay không cần lịch: chỉ cần phương thức + email nhận (đã kiểm tra được phép) */
+export function validateTarget(b, ownEmail = '') {
+  const t = { method: String(b?.method || ''), email: b?.email === OWN_EMAIL ? norm(ownEmail) : norm(b?.email) };
+  if (!PAYOUT_METHODS.some(m => m.id === t.method)) throw new Error('Chưa chọn phương thức rút');
+  if (!t.email) throw new Error('Acc chưa có email đăng ký (chưa lấy được dữ liệu từ EarnApp)');
+  if (!payoutAllowed(t.email, ownEmail)) throw new Error(NOT_ALLOWED);
+  return t;
+}
+
 const WD = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 /** "1 lần 10:00 14/10/2026" / "hằng tuần 15:00 T5" */
 export function describeSchedule(sch) {
@@ -123,15 +134,17 @@ function log(acc, sch, status, message, amount = null) {
  * Rút toàn bộ số dư 1 acc theo lịch đã lưu.
  * Trả về { status: ok | failed | skipped | retry, message, amount }
  */
-async function redeem(acc, sch) {
+async function redeem(acc, sch, step = () => {}) {
   if (acc.archived_at) return { status: 'failed', message: 'Acc đang lưu trữ' };
   if (acc.status === 'banned') return { status: 'failed', message: 'Acc đã bị khoá' };
   // Kiểm tra lại lúc rút: email bị gỡ khỏi .env sau khi hẹn thì không rút
   if (!payoutAllowed(sch.email, acc.email)) return { status: 'failed', message: NOT_ALLOWED };
   const client = new EarnAppClient(decrypt(acc.cookie_enc), acc.proxy);
+  step('Đang kiểm tra số dư');
   const m = await client.call('money');
   const balance = Number(m.balance) || 0;
   let meta = PAYOUT_METHODS.find(x => x.id === sch.method);
+  step('Đang kiểm tra mức rút tối thiểu');
   try {
     const live = (await client.call('payment_methods'))?.[sch.method];
     if (live?.disabled) return { status: 'failed', message: `EarnApp đang tắt phương thức ${methodLabel(sch.method)}` };
@@ -140,34 +153,47 @@ async function redeem(acc, sch) {
   if (balance < meta.min) {
     return { status: 'skipped', message: `Số dư ${money(balance)} chưa đủ mức rút tối thiểu ${money(meta.min)} của ${methodLabel(sch.method)}`, amount: balance };
   }
+  step(`Đang gửi lệnh rút ${money(balance)} tới EarnApp`);
   const r = await client.call('redeem', { method: 'POST', body: { to: sch.email, payment_method: sch.method } });
   if (r && typeof r === 'object' && r.error) return { status: 'failed', message: `EarnApp từ chối: ${r.error}`, amount: balance };
   return { status: 'ok', message: `Đã tạo lệnh rút ${money(balance)} qua ${methodLabel(sch.method)} tới ${sch.email}`, amount: balance };
 }
 
 const running = new Set();
+// Trạng thái đang rút từng acc, để giao diện hiện "Đang rút…" (chỉ trong bộ nhớ)
+const progress = new Map();
+const setStep = (id, p) => progress.set(id, { ...progress.get(id), ...p });
+export const withdrawProgress = () => Object.fromEntries(progress);
 
-/** Chạy lệnh rút cho 1 acc. manual = bấm "Rút ngay" (không đổi lịch hẹn) */
-export async function runWithdraw(accountId, { manual = false } = {}) {
+/**
+ * Chạy lệnh rút cho 1 acc. manual = bấm "Rút ngay" (không đổi lịch hẹn).
+ * target = { method, email } đã qua validateTarget: rút tới đó thay cho phương thức + email trong lịch (acc không cần có lịch)
+ */
+export async function runWithdraw(accountId, { manual = false, target = null, ip = null } = {}) {
   if (running.has(accountId)) return { status: 'failed', message: 'Acc này đang rút, chờ chút' };
   running.add(accountId);
+  setStep(accountId, { state: 'queued', step: 'Đang chờ lượt', since: Date.now(), manual: manual || !!target });
   try {
-    return await withLock(() => runLocked(accountId, manual));
+    return await withLock(() => runLocked(accountId, manual || !!target, target, ip));
   } finally {
     running.delete(accountId);
+    progress.delete(accountId);
   }
 }
 
-async function runLocked(accountId, manual) {
+async function runLocked(accountId, manual, target, ip) {
   const s = getSettings();
   const acc = db.prepare('SELECT * FROM accounts WHERE id = ?').get(accountId);
-  const sch = db.prepare('SELECT * FROM withdraw_schedules WHERE account_id = ?').get(accountId);
+  const saved = db.prepare('SELECT * FROM withdraw_schedules WHERE account_id = ?').get(accountId);
+  const sch = target ? { ...saved, ...target, attempts: 0 } : saved;
   if (!acc || !sch) return { status: 'failed', message: 'Chưa cài phương thức và email nhận tiền cho acc này' };
+  const by = ip ? ` (IP ${cleanIp(ip)})` : '';
   const now = Date.now();
 
   let res;
+  setStep(accountId, { state: 'running', step: 'Đang kết nối EarnApp', since: now });
   try {
-    res = await redeem(acc, sch);
+    res = await redeem(acc, sch, step => setStep(accountId, { step }));
   } catch (e) {
     const temporary = e instanceof NetworkError || e instanceof RateLimitError;
     if (!manual && temporary && sch.attempts + 1 < RETRY_MAX) {
@@ -188,34 +214,38 @@ async function runLocked(accountId, manual) {
   db.prepare(`UPDATE withdraw_schedules SET ${Object.keys(upd).map(k => `${k} = @${k}`).join(', ')} WHERE account_id = @account_id`).run({ ...upd, account_id: accountId });
 
   const level = { ok: 'good', skipped: 'warning', failed: 'critical' }[res.status];
-  addEvent({ account_id: acc.id, type: 'withdraw_' + res.status, level, message: `${accName(acc)}: ${manual ? 'rút ngay' : 'rút theo lịch'}: ${res.message}` });
-  if (s.notify_withdraw) {
+  addEvent({ account_id: acc.id, type: 'withdraw_' + res.status, level, message: `${accName(acc)}: ${manual ? `bấm rút ngay${by}` : 'rút theo lịch'}: ${res.message}` });
+  // Bấm Rút ngay luôn báo (bất kể cài đặt), để biết ngay nếu không phải mình bấm.
+  // Bỏ qua vì chưa đủ tiền (không có tiền nào đi ra) chỉ báo khi bật riêng trong Cài đặt
+  const quiet = res.status === 'skipped' && !s.notify_withdraw_skipped;
+  if ((s.notify_withdraw || manual) && !quiet) {
     alertQueue.push({ type: 'withdraw_' + res.status, ts: now, account_id: acc.id, label: acc.label, email: acc.email,
-      amount: res.amount, why: res.message, method: sch.method, to: sch.email });
-    flushAlerts(s).catch(() => {});
+      amount: res.amount, why: res.message, method: sch.method, to: sch.email, manual, ip: ip ? cleanIp(ip) : null });
+    // Không gửi ngay: để đợt gom mỗi phút gửi, rút nhiều acc cùng lúc chỉ ra 1 tin
   }
   // Lấy dữ liệu acc sớm để thấy lệnh rút mới trong mục Rút tiền
   if (res.status === 'ok') db.prepare('UPDATE accounts SET next_sync_at = ? WHERE id = ?').run(now + 90e3, acc.id);
   return res;
 }
 
-/** Báo Telegram ngay mỗi khi lịch rút bị tạo / sửa / bật / tắt / xoá hoặc bấm Rút ngay (bất kể cài đặt thông báo) */
+/** Báo Telegram (trong vòng 1 phút) mỗi khi lịch rút bị tạo / sửa / bật / tắt / xoá (bất kể cài đặt thông báo) */
 export function notifyChange(accountIds, what, ip) {
-  const s = getSettings();
   const now = Date.now();
   for (const id of accountIds) {
     const acc = db.prepare('SELECT id, label, email FROM accounts WHERE id = ?').get(id);
     if (!acc) continue;
-    addEvent({ account_id: acc.id, type: 'withdraw_changed', level: 'warning', message: `${accName(acc)}: ${what} (IP ${ip})` });
-    alertQueue.push({ type: 'withdraw_changed', ts: now, account_id: acc.id, label: acc.label, email: acc.email, why: what, ip });
+    addEvent({ account_id: acc.id, type: 'withdraw_changed', level: 'warning', message: `${accName(acc)}: ${what} (IP ${cleanIp(ip)})` });
+    alertQueue.push({ type: 'withdraw_changed', ts: now, account_id: acc.id, label: acc.label, email: acc.email, why: what, ip: cleanIp(ip) });
   }
-  flushAlerts(s).catch(() => {});
+  // Gửi theo đợt gom mỗi phút (chậm tối đa ~1 phút), lưu lịch cho nhiều acc chỉ ra 1 tin
 }
 
 /** Gọi mỗi 30 giây: chạy các lịch đã tới giờ */
 export async function checkDueWithdrawals(now = Date.now()) {
   const tz = getSettings().timezone;
   const due = db.prepare('SELECT * FROM withdraw_schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at').all(now);
+  // Các acc tới giờ cùng lúc được rút lần lượt: đánh dấu cả hàng là "đang chờ lượt"
+  for (const sch of due) if (!progress.has(sch.account_id) && now - sch.next_run_at <= LATE_MAX) setStep(sch.account_id, { state: 'queued', step: 'Đang chờ lượt', since: now });
   for (const sch of due) {
     if (now - sch.next_run_at > LATE_MAX && sch.attempts === 0) {
       // Server tắt quá lâu, lỡ giờ hẹn: không rút bù vào giờ bất kỳ

@@ -1,39 +1,85 @@
 @import "tailwindcss";
+@import "@fontsource/be-vietnam-pro/400.css";
+@import "@fontsource/be-vietnam-pro/500.css";
+@import "@fontsource/be-vietnam-pro/600.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --color-good: #0ca30c;
-  --color-warn: #fab219;
-  --color-bad: #d03b3b;
+  --font-sans: "Be Vietnam Pro", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --color-good: #15803d;
+  --color-warn: #d99a06;
+  --color-bad: #c2362f;
   --color-muted: #9ca3af;
+
+  /* Màu chủ đạo: xanh than (dùng tên indigo để cả web đổi theo) */
+  --color-indigo-50: #f3f5f9;
+  --color-indigo-100: #e4e9f1;
+  --color-indigo-200: #c8d2e2;
+  --color-indigo-300: #a0b2cc;
+  --color-indigo-400: #7690b5;
+  --color-indigo-500: #4b6a95;
+  --color-indigo-600: #1f3a60;
+  --color-indigo-700: #192f4f;
+  --color-indigo-800: #14263f;
+  --color-indigo-900: #0f1d31;
+  --color-indigo-950: #0a1322;
+
+  /* Nền trung tính hơi ấm, kín đáo */
+  --color-zinc-50: #f7f7f5;
+  --color-zinc-100: #efefec;
+  --color-zinc-200: #e3e2de;
+  --color-zinc-300: #cfcdc7;
+  --color-zinc-400: #9c9a93;
+  --color-zinc-500: #6f6d67;
+  --color-zinc-600: #55534e;
+  --color-zinc-700: #3f3e3a;
+  --color-zinc-800: #282725;
+  --color-zinc-900: #1b1a19;
+  --color-zinc-950: #121211;
+
+  /* Bo góc nhỏ, gọn */
+  --radius-md: 5px;
+  --radius-lg: 6px;
+  --radius-xl: 7px;
+  --radius-2xl: 9px;
+  --radius-3xl: 12px;
 }
 
 :root {
-  --chart-1: #2a78d6;
-  --chart-2: #eb6834;
-  --chart-3: #1baf7a;
+  --chart-1: #2f6fe0;     /* thu nhập: xanh dương */
+  --chart-1-top: #5b93f2;
+  --chart-2: #e8613c;     /* lỗ */
+  --chart-3: #1a9fc9;     /* dung lượng: xanh trời */
+  --chart-3-top: #4cc0e3;
   /* Màu theo tài khoản: thứ tự cố định, đã kiểm tra phân biệt được với người mù màu */
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s-other: #a8a29e;
+  --s1: #2f6fe0; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s-other: #a8a29e;
   --chart-surface: #ffffff;
-  --chart-grid: #e7e5e4;
+  --chart-grid: #ebeae6;
+  --chart-cursor: rgb(47 111 224 / .07);
   --chart-text: #52514e;
 }
 .dark {
-  --chart-1: #3987e5;
-  --chart-2: #d95926;
-  --chart-3: #199e70;
+  --chart-1: #4f86ee;
+  --chart-1-top: #7aa6f5;
+  --chart-2: #e0704f;
+  --chart-3: #2bb0d6;
+  --chart-3-top: #62c8e8;
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s-other: #78716c;
-  --chart-surface: #18181b;
+  --chart-surface: #1b1a19;
   --chart-grid: #2e2e2b;
+  --chart-cursor: rgb(122 166 245 / .1);
   --chart-text: #c3c2b7;
 }
 
 html { -webkit-tap-highlight-color: transparent; }
 body {
-  @apply bg-zinc-50 text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
-  font-feature-settings: "cv11", "ss01";
+  @apply bg-zinc-50 antialiased dark:bg-zinc-950 dark:text-zinc-100;
+  color: #2b3442; /* xanh than đậm, dịu mắt hơn đen */
+}
+.dark body {
+  color: var(--color-zinc-100);
+  font-size: 14px;
 }
 .tabular { font-variant-numeric: tabular-nums; }
 
@@ -42,5 +88,26 @@ body {
 
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .animate-fade-in { animation: fade-in .18s ease-out; }
-@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgb(12 163 12 / .5); } 100% { box-shadow: 0 0 0 6px rgb(12 163 12 / 0); } }
+@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgb(21 128 61 / .45); } 100% { box-shadow: 0 0 0 6px rgb(21 128 61 / 0); } }
 .dot-pulse { animation: pulse-ring 1.8s ease-out infinite; }
+
+h1, h2, h3 { letter-spacing: -0.01em; }
+
+/* Tiêu đề bảng thống nhất cho mọi trang */
+table thead tr { background: rgb(247 247 245 / .7); border-bottom: 1px solid var(--color-zinc-200); }
+.dark table thead tr { background: rgb(40 39 37 / .35); border-bottom-color: var(--color-zinc-800); }
+table thead th { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; padding-top: .5rem; padding-bottom: .5rem; }
+table tfoot tr { border-top: 1px solid var(--color-zinc-300); background: transparent; }
+.dark table tfoot tr { border-top-color: var(--color-zinc-700); }
+
+/* Ô chọn (select): bỏ mũi tên mặc định của trình duyệt, dùng mũi tên xám nhỏ giống ô chọn giờ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right .7rem center;
+  background-size: 16px;
+}
+select::-ms-expand { display: none; }

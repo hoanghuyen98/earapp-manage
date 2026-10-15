@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Trash2, PiggyBank, Trophy, Users, Receipt, Gauge, Download, Calendar, Globe2, Layers, TrendingUp, Wallet, Signal, Coins, Info } from 'lucide-react';
+import { Plus, Trash2, PiggyBank, Users, Download, Info } from 'lucide-react';
 import { api, usd, vnd, fmtBytes } from '../lib';
-import { Card, CardHeader, Button, PageHeader, PageLoading, Modal, Field, Input, Select, Empty, DeviceBadge, AccountBadge, useData, useToast, cx } from '../ui';
+import { Card, CardHeader, Button, PageHeader, PageLoading, Modal, Field, Input, Select, Empty, DeviceBadge, AccountBadge, AccName, nameKey, byAccount, useData, useToast, cx } from '../ui';
 import { ProfitBars, DailyBars, UsageBars } from '../charts';
+import { StatStrip } from './Dashboard';
 import { useScope, ScopeFilter, SortTable, Delta, Uptime, ShareBar, SegTabs, pct } from '../components';
 
 const fmtD = d => d.split('-').reverse().join('/');
@@ -35,7 +36,7 @@ function CostModal({ open, onClose, onSaved }) {
     } catch (e) { toast(e.message, 'error'); } finally { setLoading(false); }
   };
   return (
-    <Modal open={open} onClose={onClose} title="Thêm chi phí" subtitle="Dùng để tính lãi thật"
+    <Modal open={open} onClose={onClose} title="Thêm chi phí"
       footer={<><Button variant="secondary" onClick={onClose}>Huỷ</Button><Button loading={loading} onClick={save}>Thêm</Button></>}>
       <div className="space-y-4">
         <Field label="Tên chi phí"><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="VD: Tiền VPS, proxy, điện, mua acc…" autoFocus /></Field>
@@ -53,19 +54,6 @@ function CostModal({ open, onClose, onSaved }) {
         <Field label={form.period === 'monthly' ? 'Bắt đầu từ ngày' : 'Ngày chi'}><Input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} /></Field>
       </div>
     </Modal>
-  );
-}
-
-function Kpi({ icon: Icon, label, value, sub, delta }) {
-  return (
-    <Card className="p-4 sm:p-5">
-      <div className="flex items-center gap-2 text-[13px] text-zinc-500"><Icon className="size-4" />{label}</div>
-      <div className="mt-2 flex flex-wrap items-baseline gap-x-2">
-        <span className="text-xl font-semibold tabular sm:text-2xl">{value}</span>
-        {delta}
-      </div>
-      <div className="mt-1 text-xs text-zinc-500">{sub}</div>
-    </Card>
   );
 }
 
@@ -109,45 +97,40 @@ export default function Reports() {
   }, {});
 
   const accCols = [
-    { key: 'name', label: 'Tài khoản', sort: a => a.name.toLowerCase(), render: a => (
-      <div className="min-w-0 max-w-64">
-        <div className="truncate font-medium">{a.name}</div>
-        <div className="truncate text-xs text-zinc-500">{a.name !== a.email ? a.email : ''}{a.group && <span className="ml-1 rounded bg-zinc-100 px-1.5 py-px dark:bg-zinc-800">{a.group}</span>}</div>
-      </div>
-    ) },
+    { key: 'name', label: 'Tài khoản', sort: nameKey, render: a => <AccName className="max-w-64" label={a.label} email={a.email} group={a.group} /> },
     { key: 'status', label: 'Trạng thái', hide: 'lg', render: a => <AccountBadge status={a.status} /> },
     { key: 'earned', label: 'Thu nhập', align: 'right', render: a => <><span className="font-semibold">{usd(a.earned, 3)}</span><div className="text-xs text-zinc-500"><Delta now={a.earned} prev={a.prev_earned} /></div></> },
     { key: 'share', label: 'Tỷ trọng', align: 'right', hide: 'md', render: a => <ShareBar value={a.share} /> },
     { key: 'usage', label: 'Dung lượng', align: 'right', hide: 'md', render: a => fmtBytes(a.usage) },
     { key: 'per_gb', label: '$/GB', align: 'right', hide: 'lg', title: 'Tiền kiếm được trên mỗi GB', render: a => a.per_gb == null ? '—' : usd(a.per_gb, 3) },
-    { key: 'devices', label: 'Máy', align: 'right', hide: 'sm', title: 'Số máy đang hoạt động (không tính máy bị ban)' },
-    { key: 'per_device_day', label: '$/máy/ngày', align: 'right', hide: 'xl', render: a => a.per_device_day == null ? '—' : usd(a.per_device_day, 4) },
-    { key: 'uptime', label: 'Uptime', align: 'right', hide: 'lg', render: a => <Uptime value={a.uptime} /> },
+    { key: 'devices', label: 'Node', align: 'right', hide: 'sm', title: 'Số node đang hoạt động (không tính node bị ban)' },
+    { key: 'per_device_day', label: '$/node/ngày', align: 'right', hide: 'xl', render: a => a.per_device_day == null ? '—' : usd(a.per_device_day, 4) },
+    { key: 'uptime', label: 'Online', align: 'right', hide: 'lg', render: a => <Uptime value={a.uptime} /> },
     { key: 'payouts', label: 'Tiền về', align: 'right', hide: 'xl', title: 'Số tiền rút đã về trong kỳ', render: a => a.payouts ? usd(a.payouts) : '—' },
     { key: 'balance', label: 'Số dư', align: 'right', render: a => usd(a.balance) },
   ];
 
   const groupCols = [
-    { key: 'group', label: 'Nhóm', render: g => <span className="font-medium">{g.group}</span> },
+    { key: 'group', label: 'Máy', render: g => <span className="font-medium">{g.group}</span> },
     { key: 'accounts', label: 'Số acc', align: 'right' },
     { key: 'earned', label: 'Thu nhập', align: 'right', render: g => <><span className="font-semibold">{usd(g.earned, 3)}</span> <Delta now={g.earned} prev={g.prev_earned} /></> },
     { key: 'share', label: 'Tỷ trọng', align: 'right', hide: 'sm', render: g => <ShareBar value={g.share} /> },
     { key: 'usage', label: 'Dung lượng', align: 'right', hide: 'md', render: g => fmtBytes(g.usage) },
     { key: 'per_gb', label: '$/GB', align: 'right', hide: 'md', render: g => g.per_gb == null ? '—' : usd(g.per_gb, 3) },
-    { key: 'devices', label: 'Máy', align: 'right' },
+    { key: 'devices', label: 'Node', align: 'right' },
     { key: 'balance', label: 'Số dư', align: 'right', render: g => usd(g.balance) },
   ];
 
   const devCols = [
     { key: 'rank', label: '#', sortable: false, className: 'text-zinc-400 tabular w-10', render: (d, i) => i + 1 },
-    { key: 'title', label: 'Máy', sort: d => d.title, render: d => <><div className="font-medium">{d.title}</div><div className="text-[11px] text-zinc-400">{(d.country || '').toUpperCase()}</div></> },
-    { key: 'account', label: 'Tài khoản', hide: 'md', sort: d => d.account, render: d => <Link to={`/accounts/${d.account_id}`} onClick={e => e.stopPropagation()} className="block max-w-48 truncate text-zinc-600 hover:underline dark:text-zinc-300">{d.account}</Link> },
+    { key: 'title', label: 'Node', sort: d => d.title, render: d => <><div className="font-medium">{d.title}</div><div className="text-[11px] text-zinc-400">{(d.country || '').toUpperCase()}</div></> },
+    { key: 'account', label: 'Tài khoản', hide: 'md', sort: nameKey, render: d => <Link to={`/accounts/${d.account_id}`} onClick={e => e.stopPropagation()} className="block max-w-56 text-zinc-600 hover:text-indigo-600 dark:text-zinc-300"><AccName small label={d.label} email={d.email} group={d.group_name} /></Link> },
     { key: 'status', label: 'Trạng thái', hide: 'lg', render: d => <DeviceBadge status={d.status} /> },
     { key: 'earned', label: 'Thu nhập', align: 'right', render: d => <span className="font-semibold">{usd(d.earned, 3)}</span> },
     { key: 'per_day', label: 'TB/ngày', align: 'right', hide: 'sm', render: d => usd(d.per_day, 4) },
     { key: 'usage', label: 'Dung lượng', align: 'right', hide: 'md', render: d => fmtBytes(d.usage) },
     { key: 'per_gb', label: '$/GB', align: 'right', hide: 'lg', render: d => d.per_gb == null ? '—' : usd(d.per_gb, 3) },
-    { key: 'uptime', label: 'Uptime', align: 'right', hide: 'sm', render: d => <Uptime value={d.uptime} /> },
+    { key: 'uptime', label: 'Online', align: 'right', hide: 'sm', render: d => <Uptime value={d.uptime} /> },
   ];
   const weak = r.devices.filter(d => d.status !== 'banned' && avgDev > 0 && d.per_day < avgDev * 0.5);
 
@@ -167,7 +150,7 @@ export default function Reports() {
 
   const countryCols = [
     { key: 'country', label: 'Quốc gia', render: c => <span className="font-medium">{c.country}</span> },
-    { key: 'devices', label: 'Số máy', align: 'right' },
+    { key: 'devices', label: 'Số node', align: 'right' },
     { key: 'active', label: 'Đang chạy', align: 'right' },
     { key: 'earned', label: 'Thu nhập', align: 'right', render: c => usd(c.earned, 3) },
     { key: 'usage', label: 'Dung lượng', align: 'right', hide: 'sm', render: c => fmtBytes(c.usage) },
@@ -179,54 +162,53 @@ export default function Reports() {
 
   return (
     <>
-      <PageHeader title="Báo cáo" subtitle="Thu nhập, dung lượng, hiệu suất theo tài khoản, nhóm, máy và lãi lỗ">
+      <PageHeader title="Báo cáo">
         <ScopeFilter scope={scope} />
         <a href={exportUrl}><Button variant="secondary" icon={Download}>Xuất Excel</Button></a>
       </PageHeader>
 
       {/* Khoảng thời gian */}
-      <Card className="mb-4 flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <Calendar className="size-4 text-zinc-400" />
           <SegTabs size="md" value={preset} onChange={choose} items={[['7', '7 ngày'], ['30', '30 ngày'], ['90', '90 ngày'], ['month', 'Tháng này'], ['last_month', 'Tháng trước'], ['custom', 'Tuỳ chọn']]} />
         </div>
         {preset === 'custom' ? (
           <div className="flex items-center gap-2">
-            <Input type="date" value={range.from} max={range.to} onChange={e => setRange({ ...range, from: e.target.value })} className="w-40 py-1.5" />
+            <Input type="date" value={range.from} max={range.to} onChange={e => setRange({ ...range, from: e.target.value })} className="w-40 h-9 py-0" />
             <span className="text-zinc-400">→</span>
-            <Input type="date" value={range.to} min={range.from} onChange={e => setRange({ ...range, to: e.target.value })} className="w-40 py-1.5" />
+            <Input type="date" value={range.to} min={range.from} onChange={e => setRange({ ...range, to: e.target.value })} className="w-40 h-9 py-0" />
           </div>
         ) : (
-          <div className="text-sm text-zinc-500">
-            <b className="text-zinc-700 dark:text-zinc-200">{fmtD(r.from)} → {fmtD(r.to)}</b> ({r.days} ngày) · so với {fmtD(r.prev.from)} → {fmtD(r.prev.to)}
+          <div className="text-[13px] text-zinc-500" title={`So với ${fmtD(r.prev.from)} → ${fmtD(r.prev.to)}`}>
+            <span className="text-zinc-800 dark:text-zinc-200">{fmtD(r.from)} → {fmtD(r.to)}</span> · {r.days} ngày
           </div>
         )}
-      </Card>
+      </div>
 
       {missingData && (
-        <div className="mb-4 flex items-start gap-2.5 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
-          <Info className="mt-0.5 size-4 shrink-0" />
-          <span>Web bắt đầu ghi thu nhập theo ngày từ <b>{fmtD(r.data_since)}</b>. Trước ngày đó chưa có số liệu, nên tổng và mức so sánh với kỳ trước có thể thấp hơn thực tế. Dung lượng theo tháng vẫn có từ EarnApp.</span>
+        <div className="mb-4 flex items-center gap-2 text-[13px] text-zinc-500">
+          <Info className="size-4 shrink-0" />
+          <span>Thu nhập theo ngày chỉ có từ {fmtD(r.data_since)}, tổng kỳ này có thể thấp hơn thực tế.</span>
         </div>
       )}
 
-      {/* KPI */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-        <Kpi icon={TrendingUp} label="Thu nhập" value={usd(s.earned, 2)} delta={<Delta now={s.earned} prev={s.prev_earned} />} sub={<>≈ {vnd(s.income_vnd)} · kỳ trước {usd(s.prev_earned, 2)}</>} />
-        <Kpi icon={Coins} label="Trung bình/ngày" value={usd(s.avg_per_day, 3)} sub={`Tính trên ${s.data_days} ngày có số liệu`} />
-        <Kpi icon={Gauge} label="Dung lượng" value={fmtBytes(s.usage)} delta={<Delta now={s.usage} prev={s.prev_usage} />} sub={<>Hiệu suất {s.per_gb == null ? '—' : <b>{usd(s.per_gb, 3)}/GB</b>}</>} />
-        <Kpi icon={Signal} label="Uptime trung bình" value={pct(s.uptime, 1)} sub="Tỷ lệ thời gian máy online (không tính máy bị ban)" />
-        <Kpi icon={Wallet} label="Tiền về trong kỳ" value={usd(s.payouts)} sub={`${s.payouts_count} lệnh đã thanh toán`} />
-        <Kpi icon={Receipt} label="Chi phí trong kỳ" value={s.cost_vnd == null ? '—' : vnd(s.cost_vnd)} sub={s.cost_vnd == null ? 'Chỉ tính khi xem tất cả tài khoản' : 'Chi phí tháng được chia theo ngày'} />
-        <Kpi icon={PiggyBank} label="Lãi trong kỳ" value={s.profit_vnd == null ? '—' : vnd(s.profit_vnd)} sub={s.profit_vnd == null ? 'Bỏ lọc để xem lãi lỗ' : 'Thu nhập quy đổi trừ chi phí'} />
-        <Kpi icon={Users} label="Tài khoản" value={r.accounts.length} sub={`${r.accounts.filter(a => a.status === 'running').length} đang chạy · ${r.devices.filter(d => d.status === 'online' || d.status === 'idle').length} máy online`} />
-      </div>
+      <StatStrip items={[
+        { label: 'Thu nhập', big: true, value: usd(s.earned, 2), right: <Delta now={s.earned} prev={s.prev_earned} />, sub: `Kỳ trước ${usd(s.prev_earned, 2)}`, title: `≈ ${vnd(s.income_vnd)}` },
+        { label: 'Trung bình/ngày', big: true, value: usd(s.avg_per_day, 3), sub: `${s.data_days} ngày có số liệu` },
+        { label: 'Dung lượng', big: true, value: fmtBytes(s.usage), right: <Delta now={s.usage} prev={s.prev_usage} />, sub: s.per_gb == null ? null : `${usd(s.per_gb, 3)}/GB` },
+        { label: 'Online trung bình', big: true, value: pct(s.uptime, 1), sub: 'Không tính node bị ban' },
+      ]} />
+      <StatStrip className="mt-3" items={[
+        { label: 'Tiền về', value: usd(s.payouts), sub: `${s.payouts_count} lệnh` },
+        { label: 'Chi phí', value: s.cost_vnd == null ? '—' : vnd(s.cost_vnd), sub: s.cost_vnd == null ? 'Bỏ lọc để xem' : null },
+        { label: 'Lãi', value: s.profit_vnd == null ? '—' : <span className={s.profit_vnd < 0 ? 'text-bad' : ''}>{vnd(s.profit_vnd)}</span>, sub: s.profit_vnd == null ? 'Bỏ lọc để xem' : null },
+        { label: 'Tài khoản', value: r.accounts.length, sub: `${r.devices.filter(d => d.status === 'online' || d.status === 'idle').length} node online` },
+      ]} />
 
       {/* Biểu đồ theo ngày */}
       <Card className="mt-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-5">
+        <div className="px-5 pt-4">
           <SegTabs size="md" value={metric} onChange={setMetric} items={[['earn', 'Thu nhập'], ['usage', 'Dung lượng']]} />
-          <span className="text-xs text-zinc-500">Theo ngày, {fmtD(r.from)} → {fmtD(r.to)}</span>
         </div>
         <div className="px-3 pb-4 pt-3">
           {metric === 'earn' ? <DailyBars data={r.daily} rate={rate} /> : <UsageBars data={r.daily.map(x => ({ date: x.date, value: x.usage }))} />}
@@ -234,11 +216,11 @@ export default function Reports() {
       </Card>
 
       {/* Theo tài khoản */}
-      <Section title="Theo tài khoản" icon={Users} subtitle="Bấm tiêu đề cột để sắp xếp, bấm dòng để xem chi tiết acc">
-        <SortTable columns={accCols} rows={r.accounts} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={a => navigate(`/accounts/${a.id}`)}
+      <Section title="Theo tài khoản">
+        <SortTable columns={accCols} rows={[...r.accounts].sort(byAccount)} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={a => navigate(`/accounts/${a.id}`)}
           empty={<Empty icon={Users} title="Không có tài khoản" />}
           footer={r.accounts.length > 1 ? {
-            name: `Tổng ${r.accounts.length} tài khoản`,
+            name: `Tổng ${r.accounts.length} acc`,
             earned: <>{usd(accTotals.earned, 3)} <Delta now={accTotals.earned} prev={accTotals.prev_earned} /></>,
             usage: fmtBytes(accTotals.usage), per_gb: s.per_gb == null ? '—' : usd(s.per_gb, 3), devices: accTotals.devices,
             uptime: <Uptime value={s.uptime} />, payouts: usd(accTotals.payouts), balance: usd(accTotals.balance),
@@ -246,46 +228,46 @@ export default function Reports() {
       </Section>
 
       {r.groups.length > 0 && (
-        <Section title="Theo nhóm" icon={Layers} subtitle="Bấm vào nhóm để lọc báo cáo theo nhóm đó">
-          <SortTable columns={groupCols} rows={r.groups} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={g => g.group !== 'Chưa có nhóm' && scope.set({ group: g.group })} />
+        <Section title="Theo máy">
+          <SortTable columns={groupCols} rows={r.groups} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={g => g.group !== 'Chưa gán máy' && scope.set({ group: g.group })} />
         </Section>
       )}
 
       {/* Theo tháng + lãi lỗ */}
       <div className="grid gap-4 lg:grid-cols-5">
-        <Section className="lg:col-span-3" title="Theo tháng" icon={Calendar} subtitle={r.scope_all ? 'Gồm chi phí và lãi' : 'Bỏ lọc tài khoản để xem chi phí & lãi'}>
+        <Section className="lg:col-span-3" title="Theo tháng">
           <SortTable columns={monthCols} rows={[...monthsShown].reverse()} initialSort={{ key: 'month', dir: 'desc' }} />
-          {monthsShown.length < months.length && <p className="px-5 py-3 text-xs text-zinc-500">Ẩn {months.length - monthsShown.length} tháng chưa có số liệu.</p>}
+          
         </Section>
-        <Section className="lg:col-span-2" title="Lãi lỗ theo tháng" icon={PiggyBank} subtitle={<>Quy đổi $1 = {vnd(rate)} · <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-[var(--chart-1)]" />lãi</span> <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-[var(--chart-2)]" />lỗ</span></>}>
+        <Section className="lg:col-span-2" title="Lãi lỗ" subtitle={<>$1 = {vnd(rate)} · <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-[var(--chart-1)]" />lãi</span> <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm bg-[var(--chart-2)]" />lỗ</span></>}>
           {r.scope_all ? <div className="px-3 pb-4"><ProfitBars data={months.slice(-6)} height={240} /></div>
-            : <Empty icon={PiggyBank} title="Đang lọc theo tài khoản">Chi phí là chi phí chung nên chỉ tính lãi lỗ khi xem tất cả tài khoản.</Empty>}
+            : <Empty icon={PiggyBank} title="Bỏ lọc tài khoản để xem lãi lỗ" />}
         </Section>
       </div>
 
-      {/* Xếp hạng máy */}
-      <Section title="Xếp hạng máy" icon={Trophy}
-        subtitle={<>Trung bình {usd(avgDev, 4)}/máy/ngày{weak.length > 0 && <> · <b className="text-amber-600 dark:text-amber-400">{weak.length} máy kiếm dưới một nửa mức trung bình</b> (tô vàng)</>}</>}>
+      {/* Xếp hạng node */}
+      <Section title="Xếp hạng node"
+        subtitle={<>TB {usd(avgDev, 4)}/node/ngày{weak.length > 0 && <> · <span className="text-amber-700 dark:text-amber-400">{weak.length} node dưới nửa mức TB (tô vàng)</span></>}</>}>
         <SortTable columns={devCols} rows={allDevices ? r.devices : r.devices.slice(0, 15)} initialSort={{ key: 'earned', dir: 'desc' }}
           rowClass={d => d.status !== 'banned' && avgDev > 0 && d.per_day < avgDev * 0.5 ? 'bg-amber-50/60 dark:bg-amber-500/5' : ''}
-          empty={<Empty title="Chưa có máy" />} />
+          empty={<Empty title="Chưa có node" />} />
         {r.devices.length > 15 && (
           <button onClick={() => setAllDevices(!allDevices)} className="w-full border-t border-zinc-100 py-2.5 text-sm font-medium text-indigo-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-indigo-400 dark:hover:bg-zinc-800/40 cursor-pointer">
-            {allDevices ? 'Thu gọn' : `Xem tất cả ${r.devices.length} máy`}
+            {allDevices ? 'Thu gọn' : `Xem cả ${r.devices.length} node`}
           </button>
         )}
       </Section>
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Theo quốc gia */}
-        <Section title="Theo quốc gia" icon={Globe2} subtitle="Vị trí IP của máy theo EarnApp">
+        <Section title="Theo quốc gia">
           <SortTable columns={countryCols} rows={r.countries} initialSort={{ key: 'earned', dir: 'desc' }} empty={<Empty title="Chưa có dữ liệu" />} />
         </Section>
 
         {/* Chi phí */}
-        <Section title="Chi phí" icon={Receipt} subtitle="VPS, proxy, điện, mua acc… (dùng chung cho mọi tài khoản)" action={<Button size="sm" icon={Plus} onClick={() => setAdding(true)}>Thêm</Button>}>
+        <Section title="Chi phí" action={<Button size="sm" icon={Plus} onClick={() => setAdding(true)}>Thêm</Button>}>
           {r.costs.length === 0 ? (
-            <Empty title="Chưa nhập chi phí">Thêm chi phí để web tính lãi thật.</Empty>
+            <Empty title="Chưa có chi phí" />
           ) : (
             <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
               {r.costs.map(c => (

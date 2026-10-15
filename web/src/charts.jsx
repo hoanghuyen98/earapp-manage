@@ -18,6 +18,18 @@ function ChartTip({ active, payload, rate, render }) {
 }
 
 const axis = { fontSize: 11, fill: 'var(--chart-text)' };
+const grid = <CartesianGrid vertical={false} stroke="var(--chart-grid)" strokeDasharray="3 4" />;
+const cursor = { fill: 'var(--chart-cursor)', radius: 4 };
+
+/** Màu cột chuyển nhẹ từ sáng (trên) xuống đậm (dưới) */
+const Gradient = ({ id, top, bottom }) => (
+  <defs>
+    <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stopColor={top} />
+      <stop offset="100%" stopColor={bottom} />
+    </linearGradient>
+  </defs>
+);
 
 export const SERIES_COLORS = ['var(--s1)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)'];
 export const seriesColor = (key, i) => key === 'other' ? 'var(--s-other)' : SERIES_COLORS[i % SERIES_COLORS.length];
@@ -40,10 +52,10 @@ export function StackedDaily({ data, series, rate, height = 240 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 8, right: 4, left: -8, bottom: 0 }} barCategoryGap="22%">
-        <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+        {grid}
         <XAxis dataKey="date" tickFormatter={shortDate} tick={axis} tickLine={false} axisLine={false} minTickGap={16} />
-        <YAxis tickFormatter={v => '$' + v} tick={axis} tickLine={false} axisLine={false} width={44} />
-        <Tooltip cursor={{ fill: 'var(--chart-grid)', opacity: 0.5 }} content={<ChartTip render={p => (
+        <YAxis tickFormatter={v => '$' + v} tick={axis} tickLine={false} axisLine={false} width={52} />
+        <Tooltip cursor={cursor} content={<ChartTip render={p => (
           <>
             <div className="text-zinc-500 dark:text-zinc-400">{p.date.split('-').reverse().join('/')}</div>
             <div className="mt-1 space-y-0.5">
@@ -60,31 +72,41 @@ export function StackedDaily({ data, series, rate, height = 240 }) {
         )} />} />
         {series.map((s, i) => (
           <Bar key={s.key} dataKey={s.key} stackId="a" fill={seriesColor(s.key, i)} stroke="var(--chart-surface)" strokeWidth={1}
-            radius={i === series.length - 1 ? [4, 4, 0, 0] : 0} maxBarSize={28} isAnimationActive={false} />
+            radius={i === series.length - 1 ? [5, 5, 0, 0] : 0} maxBarSize={26} isAnimationActive={false} />
         ))}
       </BarChart>
     </ResponsiveContainer>
   );
 }
 
+/** Chia trục thành 4 khoảng tròn (1, 2, 2.5, 5 × 10^n) */
+function niceTicks(max) {
+  const raw = max / 4;
+  const p = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * p).find(v => v >= raw);
+  return [0, 1, 2, 3, 4].map(i => i * step);
+}
+
 /** Cột dung lượng theo ngày hoặc theo tháng (byte) */
 export function UsageBars({ data, height = 240, xKey = 'date' }) {
+  const ticks = niceTicks(Math.max(1e8, ...data.map(d => d.value || 0)));
   const last = data[data.length - 1]?.[xKey];
   const label = v => xKey === 'month' ? 'T' + Number(v.slice(5)) + '/' + v.slice(2, 4) : shortDate(v);
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 8, right: 4, left: 0, bottom: 0 }} barCategoryGap="22%">
-        <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+        {grid}
         <XAxis dataKey={xKey} tickFormatter={label} tick={axis} tickLine={false} axisLine={false} minTickGap={16} />
-        <YAxis tickFormatter={v => v ? fmtBytes(v, true) : '0'} domain={[0, max => Math.max(max, 1e8)]} tick={axis} tickLine={false} axisLine={false} width={58} />
-        <Tooltip cursor={{ fill: 'var(--chart-grid)', opacity: 0.5 }} content={<ChartTip render={p => (
+        <YAxis tickFormatter={v => v ? fmtBytes(v, true) : '0'} domain={[0, ticks[4]]} ticks={ticks} tick={axis} tickLine={false} axisLine={false} width={58} />
+        <Tooltip cursor={cursor} content={<ChartTip render={p => (
           <>
             <div className="text-zinc-500 dark:text-zinc-400">{xKey === 'month' ? `Tháng ${Number(p.month.slice(5))}/${p.month.slice(0, 4)}` : p.date.split('-').reverse().join('/')}</div>
             <div className="mt-0.5 font-semibold tabular">{fmtBytes(p.value)}</div>
           </>
         )} />} />
-        <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={xKey === 'month' ? 40 : 28} isAnimationActive={false}>
-          {data.map(d => <Cell key={d[xKey]} fill="var(--chart-3)" fillOpacity={d[xKey] === last ? 0.55 : 1} />)}
+        <Gradient id="g-usage" top="var(--chart-3-top)" bottom="var(--chart-3)" />
+        <Bar dataKey="value" radius={[5, 5, 1, 1]} maxBarSize={xKey === 'month' ? 40 : 26} isAnimationActive={false}>
+          {data.map(d => <Cell key={d[xKey]} fill="url(#g-usage)" fillOpacity={d[xKey] === last ? 0.45 : 1} />)}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -97,12 +119,13 @@ export function DailyBars({ data, rate, height = 240 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 8, right: 4, left: -8, bottom: 0 }} barCategoryGap="22%">
-        <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+        {grid}
         <XAxis dataKey="date" tickFormatter={shortDate} tick={axis} tickLine={false} axisLine={false} minTickGap={16} />
-        <YAxis tickFormatter={v => '$' + v} tick={axis} tickLine={false} axisLine={false} width={44} allowDecimals />
-        <Tooltip content={<ChartTip rate={rate} />} cursor={{ fill: 'var(--chart-grid)', opacity: 0.5 }} />
-        <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false}>
-          {data.map(d => <Cell key={d.date} fill="var(--chart-1)" fillOpacity={d.date === today ? 0.55 : 1} />)}
+        <YAxis tickFormatter={v => '$' + v} tick={axis} tickLine={false} axisLine={false} width={52} allowDecimals />
+        <Tooltip content={<ChartTip rate={rate} />} cursor={cursor} />
+        <Gradient id="g-earn" top="var(--chart-1-top)" bottom="var(--chart-1)" />
+        <Bar dataKey="value" radius={[5, 5, 1, 1]} maxBarSize={26} isAnimationActive={false}>
+          {data.map(d => <Cell key={d.date} fill="url(#g-earn)" fillOpacity={d.date === today ? 0.45 : 1} />)}
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -114,11 +137,11 @@ export function ProfitBars({ data, height = 260 }) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 8, right: 4, left: 0, bottom: 0 }} barCategoryGap="30%">
-        <CartesianGrid vertical={false} stroke="var(--chart-grid)" />
+        {grid}
         <XAxis dataKey="month" tickFormatter={m => 'T' + Number(m.slice(5)) + '/' + m.slice(2, 4)} tick={axis} tickLine={false} axisLine={false} />
         <YAxis tickFormatter={vndShort} tick={axis} tickLine={false} axisLine={false} width={52} />
         <ReferenceLine y={0} stroke="var(--chart-text)" strokeOpacity={0.4} />
-        <Tooltip cursor={{ fill: 'var(--chart-grid)', opacity: 0.5 }} content={<ChartTip render={p => (
+        <Tooltip cursor={cursor} content={<ChartTip render={p => (
           <>
             <div className="text-zinc-500 dark:text-zinc-400">Tháng {Number(p.month.slice(5))}/{p.month.slice(0, 4)}</div>
             <div className="mt-1 grid grid-cols-[auto_auto] gap-x-4 gap-y-0.5 tabular">
@@ -128,8 +151,9 @@ export function ProfitBars({ data, height = 260 }) {
             </div>
           </>
         )} />} />
-        <Bar dataKey="profit_vnd" radius={4} maxBarSize={40} isAnimationActive={false}>
-          {data.map(d => <Cell key={d.month} fill={d.profit_vnd >= 0 ? 'var(--chart-1)' : 'var(--chart-2)'} />)}
+        <Gradient id="g-profit" top="var(--chart-1-top)" bottom="var(--chart-1)" />
+        <Bar dataKey="profit_vnd" radius={5} maxBarSize={40} isAnimationActive={false}>
+          {data.map(d => <Cell key={d.month} fill={d.profit_vnd >= 0 ? 'url(#g-profit)' : 'var(--chart-2)'} />)}
         </Bar>
       </BarChart>
     </ResponsiveContainer>

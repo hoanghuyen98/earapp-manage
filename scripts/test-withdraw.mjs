@@ -10,7 +10,7 @@ const { db, setSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, NetworkError } = await import('../server/earnapp.js');
 const { alertQueue } = await import('../server/sync.js');
-const { zonedTs, nextRunAt, validateSchedule, saveSchedule, runWithdraw, checkDueWithdrawals, describeSchedule, notifyChange } = await import('../server/withdraw.js');
+const { zonedTs, nextRunAt, validateSchedule, saveSchedule, runWithdraw, validateTarget, checkDueWithdrawals, describeSchedule, notifyChange, withdrawProgress } = await import('../server/withdraw.js');
 const { config } = await import('../server/config.js');
 const { syncAccount } = await import('../server/sync.js');
 const { formatAlerts } = await import('../server/alerts.js');
@@ -55,12 +55,13 @@ assert.equal(validateSchedule({ ...base, weekdays: [4, 1, 4] }, wed9, TZ).weekda
 
 // ---- Chạy lệnh rút với EarnApp giả ----
 let fake, calls = [];
+const seenProgress = []; // trạng thái "đang rút" chụp lại đúng lúc gửi lệnh rút
 EarnAppClient.prototype.call = async function (name, opts = {}) {
   calls.push({ name, body: opts.body });
   if (fake.error && name === fake.errorOn) throw fake.error;
   if (name === 'money') return { balance: fake.balance };
   if (name === 'payment_methods') return { 'paypal.com': { min_redeem: 10 }, 'wise.com': { min_redeem: 10, disabled: fake.wiseOff } };
-  if (name === 'redeem') return fake.redeem ?? { status: 'ok' };
+  if (name === 'redeem') { seenProgress.push(structuredClone(withdrawProgress())); return fake.redeem ?? { status: 'ok' }; }
   throw new Error('không mong đợi ' + name);
 };
 
@@ -100,9 +101,17 @@ assert.equal(calls.length, 0, 'không rút trùng');
 // Acc 2 hằng tuần: số dư thiếu -> bỏ qua, hẹn tuần sau, KHÔNG gọi redeem
 fake = { balance: 4 };
 db.prepare('UPDATE withdraw_schedules SET next_run_at = ? WHERE account_id = 2').run(Date.now() - 1000);
+const sentBeforeSkip = sent.length;
 await checkDueWithdrawals();
 assert.ok(!calls.some(c => c.name === 'redeem'), 'thiếu tiền thì không gọi redeem');
 assert.equal(sch(2).last_status, 'skipped');
+assert.equal(sent.length, sentBeforeSkip, 'mặc định không báo Telegram khi bỏ qua vì chưa đủ tiền');
+assert.equal(logs().at(-1).status, 'skipped', 'vẫn ghi nhật ký rút');
+// Bật riêng trong Cài đặt thì báo
+setSettings({ notify_withdraw_skipped: true });
+db.prepare('UPDATE withdraw_schedules SET next_run_at = ? WHERE account_id = 2').run(Date.now() - 1000);
+await checkDueWithdrawals();
+assert.ok(sent.slice(sentBeforeSkip).some(a => a.type === 'withdraw_skipped'), 'bật thì báo');
 assert.equal(sch(2).enabled, 1);
 assert.ok(sch(2).next_run_at > Date.now(), 'hẹn lần sau');
 assert.equal(new Date(sch(2).next_run_at).getUTCHours(), 8, '15h VN');
@@ -166,6 +175,63 @@ assert.equal(sch(2).email, 'b@test.com');
 fake = { balance: 15 };
 assert.equal((await runWithdraw(2, { manual: true })).status, 'ok');
 assert.deepEqual(calls.find(c => c.name === 'redeem').body, { to: 'b@test.com', payment_method: 'paypal.com' });
+
+// Rút ngay không cần lịch: tự chọn phương thức + email, không tạo/đổi lịch
+assert.throws(() => validateTarget({ method: 'paypal.com', email: 'hacker@evil.com' }, 'c@test.com'), /email đăng ký của acc/);
+assert.throws(() => validateTarget({ method: 'x', email: '__own__' }, 'c@test.com'), /phương thức/);
+db.prepare('INSERT INTO accounts(email, cookie_enc, created_at) VALUES (?, ?, ?)').run('c@test.com', encrypt('oauth-refresh-token=x; auth=1'), Date.now());
+calls = [];
+fake = { balance: 11 };
+assert.equal((await runWithdraw(3, { target: validateTarget({ method: 'wise.com', email: '__own__' }, 'c@test.com') })).status, 'ok');
+assert.deepEqual(calls.find(c => c.name === 'redeem').body, { to: 'c@test.com', payment_method: 'wise.com' });
+assert.equal(sch(3), undefined, 'không tự tạo lịch');
+assert.equal(logs().at(-1).email, 'c@test.com');
+// Acc có lịch: rút ngay tới chỗ khác không đổi lịch đã lưu
+const before2 = { ...sch(2) };
+calls = [];
+assert.equal((await runWithdraw(2, { target: validateTarget({ method: 'paypal.com', email: 'pay1@test.com' }, 'b@test.com') })).status, 'ok');
+assert.deepEqual(calls.find(c => c.name === 'redeem').body, { to: 'pay1@test.com', payment_method: 'paypal.com' });
+assert.equal(sch(2).email, before2.email);
+assert.equal(sch(2).next_run_at, before2.next_run_at);
+// Chưa có lịch, không chọn nơi nhận: báo lỗi, không rút
+calls = [];
+assert.equal((await runWithdraw(3, { manual: true })).status, 'failed');
+assert.ok(!calls.some(c => c.name === 'redeem'));
+
+// Bấm Rút ngay: chỉ 1 tin kết quả, ghi IP người bấm (bỏ "::ffff:"), luôn báo dù tắt thông báo rút
+setSettings({ notify_withdraw: false });
+const sentBefore = sent.length;
+fake = { balance: 13 };
+assert.equal((await runWithdraw(2, { manual: true, ip: '::ffff:9.8.7.6' })).status, 'ok');
+const mine = sent.slice(sentBefore);
+assert.equal(mine.length, 1, '1 lần rút = 1 tin');
+assert.equal(mine[0].type, 'withdraw_ok');
+const okMsg = formatAlerts(mine, { timezone: TZ, usd_vnd: 26000 });
+assert.match(okMsg, /Bấm Rút ngay trên web \(IP 9\.8\.7\.6\)/);
+assert.doesNotMatch(okMsg, /::ffff/);
+console.log('----- Tin Rút ngay -----\n' + okMsg + '\n------------------------');
+setSettings({ notify_withdraw: true });
+
+// Lần lấy dữ liệu sau thấy lệnh đó trên EarnApp: không báo "Lệnh rút mới" lần nữa.
+// Lệnh tạo ngoài web (số tiền khác) vẫn báo.
+EarnAppClient.prototype.fetchAll = async () => structuredClone(fake);
+const acc2 = () => db.prepare('SELECT * FROM accounts WHERE id = 2').get();
+const txData = txs => ({ user: { email: 'b@test.com' }, money: { balance: 0, earnings_total: 20 }, devices: [], statuses: {}, transactions: txs, usage: [], usageMonthly: null });
+fake = txData([]);
+await syncAccount(acc2());
+fake = txData([{ uuid: 'tw1', status: 'approved', money_amount: 13, payment_method: 'paypal.com', date: new Date().toISOString() }]);
+assert.equal((await syncAccount(acc2())).filter(a => a.type === 'payout_new').length, 0, 'lệnh do web tạo: không báo lại');
+fake = txData([{ uuid: 'tw1', status: 'approved', money_amount: 13, payment_method: 'paypal.com', date: new Date().toISOString() },
+  { uuid: 'tx2', status: 'approved', money_amount: 27.4, payment_method: 'paypal.com', date: new Date().toISOString() }]);
+assert.equal((await syncAccount(acc2())).filter(a => a.type === 'payout_new').length, 1, 'lệnh tạo ngoài web: vẫn báo');
+
+// Đang rút: giao diện thấy "đang rút" + bước đang làm; xong thì hết
+seenProgress.length = 0;
+fake = { balance: 12 };
+assert.equal((await runWithdraw(2, { manual: true })).status, 'ok');
+assert.equal(seenProgress[0]['2'].state, 'running');
+assert.match(seenProgress[0]['2'].step, /Đang gửi lệnh rút \$12\.00/);
+assert.deepEqual(withdrawProgress(), {}, 'xong thì không còn trạng thái đang rút');
 
 // Acc bị khoá: không rút
 db.prepare("UPDATE accounts SET status = 'banned' WHERE id = 2").run();

@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Wallet, Download, Clock, CheckCircle2, Receipt } from 'lucide-react';
+import { Download, Receipt } from 'lucide-react';
 import { api, usd, vnd, fmtDateTime, txStatus } from '../lib';
 import WithdrawSchedule from './WithdrawSchedule';
-import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Empty, Badge, useData, cx } from '../ui';
+import { Card, Button, PageHeader, PageLoading, Tabs, SearchInput, Empty, StateText, AccName, byAccount, useData } from '../ui';
+import { StatStrip } from './Dashboard';
+
+const txDot = s => s === 'paid' ? 'bg-good' : 'bg-warn';
 
 const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise', 'wise.com': 'Wise' };
 export const methodName = m => METHOD[m] || (/^amazon/.test(m || '') ? 'Amazon Gift Card' : m || '—');
@@ -15,12 +18,12 @@ export function TxTable({ list, showAccount }) {
       <div className="hidden overflow-x-auto md:block">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-100 text-left text-xs text-zinc-500 dark:border-zinc-800">
+            <tr className="text-left text-zinc-500">
               <th className="px-5 py-3 font-medium">Ngày tạo lệnh</th>
               {showAccount && <th className="px-3 py-3 font-medium">Tài khoản</th>}
               <th className="px-3 py-3 font-medium">Phương thức</th>
               <th className="px-3 py-3 font-medium">Trạng thái</th>
-              <th className="px-3 py-3 font-medium">Ngày nhận tiền</th>
+              <th className="px-3 py-3 font-medium">Ngày nhận</th>
               <th className="px-3 py-3 text-right font-medium">Phí</th>
               <th className="px-5 py-3 text-right font-medium">Số tiền</th>
             </tr>
@@ -31,9 +34,9 @@ export function TxTable({ list, showAccount }) {
               return (
                 <tr key={t.uuid} className="hover:bg-zinc-50/80 dark:hover:bg-zinc-800/40">
                   <td className="px-5 py-3 whitespace-nowrap">{fmtDateTime(t.date)}</td>
-                  {showAccount && <td className="max-w-56 truncate px-3 py-3"><Link to={`/accounts/${t.account_id}`} className="hover:text-indigo-600 hover:underline">{t.account}</Link></td>}
+                  {showAccount && <td className="max-w-60 px-3 py-3"><Link to={`/accounts/${t.account_id}`} className="block hover:text-indigo-600"><AccName small label={t.label} email={t.email} group={t.group_name} /></Link></td>}
                   <td className="px-3 py-3">{methodName(t.payment_method)}</td>
-                  <td className="px-3 py-3"><Badge className={st.cls}>{st.label}</Badge></td>
+                  <td className="px-3 py-3"><StateText dot={txDot(t.status)} label={st.label} /></td>
                   <td className="px-3 py-3 text-zinc-500 whitespace-nowrap">{t.payment_date ? fmtDateTime(t.payment_date) : '—'}</td>
                   <td className="px-3 py-3 text-right text-zinc-500 tabular">{t.fee ? usd(t.fee) : '—'}</td>
                   <td className="px-5 py-3 text-right font-semibold tabular">{usd(t.amount)}</td>
@@ -50,10 +53,10 @@ export function TxTable({ list, showAccount }) {
             <li key={t.uuid} className="px-4 py-3">
               <div className="flex items-center justify-between">
                 <span className="font-semibold tabular">{usd(t.amount)}</span>
-                <Badge className={st.cls}>{st.label}</Badge>
+                <StateText dot={txDot(t.status)} label={st.label} />
               </div>
               <div className="mt-1 flex justify-between gap-2 text-xs text-zinc-500">
-                <span className="truncate">{showAccount ? t.account : methodName(t.payment_method)}</span>
+                <span className="truncate">{showAccount ? t.label || t.email : methodName(t.payment_method)}</span>
                 <span className="whitespace-nowrap">{fmtDateTime(t.date)}</span>
               </div>
             </li>
@@ -69,14 +72,14 @@ export default function Payouts() {
   const view = params.get('view') === 'schedule' ? 'schedule' : 'history';
   const viewTabs = (
     <Tabs value={view} onChange={v => setParams(v === 'schedule' ? { view: v } : {}, { replace: true })} items={[
-      { value: 'history', label: 'Lịch sử rút' },
-      { value: 'schedule', label: 'Hẹn giờ rút tự động' },
+      { value: 'history', label: 'Lịch sử' },
+      { value: 'schedule', label: 'Rút & hẹn giờ' },
     ]} />
   );
   if (view === 'schedule') {
     return (
       <>
-        <PageHeader title="Rút tiền" subtitle="Hẹn giờ cho từng acc, tới giờ web tự rút toàn bộ số dư">{viewTabs}</PageHeader>
+        <PageHeader title="Rút tiền">{viewTabs}</PageHeader>
         <WithdrawSchedule />
       </>
     );
@@ -92,7 +95,8 @@ function PayoutHistory({ viewTabs }) {
   const list = useMemo(() => {
     const s = q.trim().toLowerCase();
     return (data?.[0] || []).filter(t => (tab === 'all' || (tab === 'paid' ? t.status === 'paid' : t.status !== 'paid')) &&
-      (!s || t.account?.toLowerCase().includes(s)));
+      (!s || [t.label, t.email, t.group_name].some(x => x?.toLowerCase().includes(s))))
+      .sort((x, y) => String(y.date).localeCompare(String(x.date)) || byAccount(x, y));
   }, [data, tab, q]);
 
   if (loading && !data) return <PageLoading />;
@@ -103,36 +107,25 @@ function PayoutHistory({ viewTabs }) {
   const fees = sum(paid.map(t => ({ amount: t.fee || 0 })));
 
   const stats = [
-    { label: 'Đã nhận về', value: sum(paid), sub: `${paid.length} lệnh · phí ${usd(fees)}`, icon: CheckCircle2, tone: 'text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10 dark:text-emerald-300' },
-    { label: 'Đang chờ thanh toán', value: sum(pending), sub: `${pending.length} lệnh`, icon: Clock, tone: 'text-amber-600 bg-amber-50 dark:bg-amber-500/10 dark:text-amber-300' },
-    { label: 'Tổng tất cả lệnh rút', value: sum(all), sub: `${all.length} lệnh`, icon: Wallet, tone: 'text-indigo-600 bg-indigo-50 dark:bg-indigo-500/10 dark:text-indigo-300' },
+    { label: 'Đã nhận về', value: sum(paid), sub: `${paid.length} lệnh · phí ${usd(fees)}` },
+    { label: 'Đang chờ', value: sum(pending), sub: `${pending.length} lệnh` },
+    { label: 'Tổng các lệnh', value: sum(all), sub: `${all.length} lệnh` },
   ];
 
   return (
     <>
-      <PageHeader title="Rút tiền" subtitle="Lịch sử rút và các lệnh rút đang chờ của tất cả tài khoản">
+      <PageHeader title="Rút tiền">
         {viewTabs}
         <a href="/api/export/transactions"><Button variant="secondary" icon={Download}>Xuất Excel</Button></a>
       </PageHeader>
-      <div className="mb-6 grid gap-4 sm:grid-cols-3">
-        {stats.map(s => (
-          <Card key={s.label} className="p-5">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] font-medium text-zinc-500">{s.label}</span>
-              <span className={cx('rounded-lg p-1.5', s.tone)}><s.icon className="size-4" /></span>
-            </div>
-            <div className="mt-2 text-2xl font-semibold tabular">{usd(s.value)}</div>
-            <div className="mt-1 text-xs text-zinc-500 tabular">≈ {vnd(s.value * settings.usd_vnd)} · {s.sub}</div>
-          </Card>
-        ))}
-      </div>
+      <StatStrip className="mb-6" items={stats.map(x => ({ label: x.label, big: true, value: usd(x.value), sub: x.sub, title: `≈ ${vnd(x.value * settings.usd_vnd)}` }))} />
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onChange={setTab} items={[
           { value: 'all', label: 'Tất cả', count: all.length },
           { value: 'pending', label: 'Đang chờ', count: pending.length, dot: 'bg-warn' },
           { value: 'paid', label: 'Đã nhận', count: paid.length, dot: 'bg-good' },
         ]} />
-        <SearchInput value={q} onChange={setQ} placeholder="Tìm theo tài khoản…" className="sm:w-72" />
+        <SearchInput value={q} onChange={setQ} placeholder="Tìm tên, email, máy…" className="sm:w-72" />
       </div>
       <Card className="overflow-hidden"><TxTable list={list} showAccount /></Card>
     </>

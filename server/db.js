@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
 );
 `);
 
-// Dung lượng (byte) mỗi máy theo ngày. EarnApp chỉ trả 7 ngày nên web tự lưu để giữ lịch sử
+// Dung lượng (byte) mỗi node theo ngày. EarnApp chỉ trả 7 ngày nên web tự lưu để giữ lịch sử
 db.exec(`
 CREATE TABLE IF NOT EXISTS device_usage (
   uuid TEXT NOT NULL,
@@ -194,20 +194,18 @@ addColumn('accounts', 'usage_monthly_at', 'INTEGER'); // lần cuối lấy dung
 addColumn('accounts', 'next_sync_at', 'INTEGER');
 addColumn('device_daily', 'check_n', 'INTEGER NOT NULL DEFAULT 0');  // số lần kiểm tra trong ngày
 addColumn('device_daily', 'online_n', 'INTEGER NOT NULL DEFAULT 0');  // số lần thấy online -> uptime %
-addColumn('accounts', 'empty_status_streak', 'INTEGER NOT NULL DEFAULT 0'); // số lần liên tiếp EarnApp trả trạng thái máy rỗng
+addColumn('accounts', 'empty_status_streak', 'INTEGER NOT NULL DEFAULT 0'); // số lần liên tiếp EarnApp trả trạng thái node rỗng
 addColumn('accounts', 'error_streak', 'INTEGER NOT NULL DEFAULT 0');  // số lần lấy dữ liệu lỗi liên tiếp (mạng, proxy…)
 addColumn('accounts', 'archived_at', 'INTEGER');
 addColumn('accounts', 'redeem_details', 'TEXT');
 addColumn('accounts', 'last_ok_at', 'INTEGER'); // lần cuối lấy dữ liệu THÀNH CÔNG (last_sync_at tính cả lần lỗi)
-// DB cũ: lấy mốc máy được cập nhật gần nhất làm lần thành công cuối
+// DB cũ: lấy mốc node được cập nhật gần nhất làm lần thành công cuối
 db.exec(`UPDATE accounts SET last_ok_at = COALESCE((SELECT MAX(updated_at) FROM devices WHERE account_id = accounts.id),
   CASE WHEN auth_state = 'ok' THEN last_sync_at END) WHERE last_ok_at IS NULL`); // Auto-redeem cài trên EarnApp: JSON {email, payment_method}, '' = chưa cài, NULL = chưa biết
 addColumn('users', 'session_ver', 'INTEGER NOT NULL DEFAULT 0'); // tăng lên thì mọi phiên đăng nhập cũ hết hiệu lực                      // đã lưu trữ: ngừng theo dõi nhưng giữ số liệu
 
-// Tên acc luôn là email đăng ký lấy từ EarnApp: bỏ tên tự đặt của bản cũ
-db.exec('UPDATE accounts SET label = NULL WHERE label IS NOT NULL');
 
-// Bỏ chế độ chỉnh tay Running/Stopped (bản cũ): đưa về tự động theo máy
+// Bỏ chế độ chỉnh tay Running/Stopped (bản cũ): đưa về tự động theo node
 {
   const manual = db.prepare("SELECT id FROM accounts WHERE status_mode = 'manual' AND status != 'banned'").all();
   for (const { id } of manual) {
@@ -220,7 +218,7 @@ const DEFAULT_SETTINGS = {
   sync_min_min: 5,             // mỗi acc lấy dữ liệu ngẫu nhiên từ 5...
   sync_max_min: 10,            // ...đến 10 phút/lần
   account_delay_sec: 3,        // khoảng cách tối thiểu giữa 2 acc
-  idle_hours: 3,               // online mà không ra tiền quá N giờ -> vàng
+  idle_hours: 6,               // online mà không tăng tiền quá N giờ (trong khi node khác cùng acc vẫn ra tiền) -> vàng
   offline_grace_min: 10,       // offline quá N phút mới báo
   timezone: 'Asia/Ho_Chi_Minh',
   usd_vnd: 26000,
@@ -237,6 +235,7 @@ const DEFAULT_SETTINGS = {
   notify_rate_limit: true,
   notify_sync_error: true,
   notify_withdraw: true,
+  notify_withdraw_skipped: false, // bỏ qua vì số dư chưa đủ mức rút tối thiểu: mặc định không báo (đỡ spam)
   error_alert_count: 3,        // lỗi lấy dữ liệu N lần liên tiếp thì báo
   daily_report: true,
   daily_report_hour: 21,

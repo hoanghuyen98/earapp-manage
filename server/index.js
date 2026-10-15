@@ -7,11 +7,13 @@ import { zip } from './zip.js';
 import { db, getSettings, setSettings, addEvent } from './db.js';
 import { encrypt, verifyPassword, hashPassword, signSession, verifySession } from './crypto.js';
 import { normalizeCookie, normalizeProxy, EarnAppClient } from './earnapp.js';
-import { runCycle, startScheduler, syncState, requestSyncAll } from './sync.js';
+import { runCycle, startScheduler, syncState, requestSyncAll, getProgress } from './sync.js';
 import { staleMs, summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
-import { sendTelegram } from './telegram.js';
+import { sendTelegramEach, chatIds, validChatId } from './telegram.js';
+import { byAccount, cmp, fullName, proxyInfo } from './accname.js';
+import { methodName } from './alerts.js';
 import { overview, report, scopeOptions } from './reports.js';
-import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, notifyChange, recomputeSchedules, startWithdrawScheduler } from './withdraw.js';
+import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, validateTarget, notifyChange, recomputeSchedules, startWithdrawScheduler, withdrawProgress } from './withdraw.js';
 
 const app = express();
 app.set('trust proxy', 'loopback');
@@ -81,7 +83,7 @@ app.get('/api/summary', (req, res) => {
     daily: dailySeries(Number(req.query.days) || 30),
     usage_daily: usageSeries(Number(req.query.days) || 30),
     sync: syncState,
-    events: db.prepare(`SELECT e.*, COALESCE(a.label, a.email) AS account FROM events e LEFT JOIN accounts a ON a.id = e.account_id ORDER BY e.id DESC LIMIT 15`).all(),
+    events: db.prepare(`SELECT e.*, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account FROM events e LEFT JOIN accounts a ON a.id = e.account_id ORDER BY e.id DESC LIMIT 15`).all(),
   });
 });
 
@@ -111,11 +113,18 @@ const todayStr = () => new Intl.DateTimeFormat('en-CA', { timeZone: getSettings(
 const withStale = a => a && ({ ...a, stale: !a.archived_at && !a.paused && (a.last_ok_at || 0) < Date.now() - staleMs() });
 
 app.get('/api/accounts', (req, res) => {
-  res.json(db.prepare(ACCOUNT_LIST_SQL + ' ORDER BY a.id').all(todayStr(), usageToday()).map(withStale));
+  res.json(db.prepare(ACCOUNT_LIST_SQL).all(todayStr(), usageToday()).sort(byAccount).map(a => ({ ...withStale(a), proxy_info: proxyInfo(a.proxy) })));
+});
+
+// Tiến độ lấy dữ liệu (vừa thêm acc / bấm đồng bộ): ?ids=1,2,3
+app.get('/api/accounts/progress', (req, res) => {
+  const ids = String(req.query.ids || '').split(',').map(Number).filter(n => Number.isInteger(n) && n > 0).slice(0, 500);
+  res.json(getProgress(ids));
 });
 
 app.get('/api/accounts/:id', (req, res) => {
   const acc = withStale(db.prepare(ACCOUNT_LIST_SQL + ' WHERE a.id = ?').get(todayStr(), usageToday(), req.params.id));
+  if (acc) acc.proxy_info = proxyInfo(acc.proxy);
   if (!acc) return res.status(404).json({ error: 'Không tìm thấy' });
   res.json({
     ...acc,
@@ -136,6 +145,7 @@ app.get('/api/accounts/:id', (req, res) => {
 /** Thêm 1 hoặc nhiều acc: mỗi dòng 1 cookie */
 app.post('/api/accounts', async (req, res) => {
   const { cookies, note = '', group_name = '' } = req.body || {};
+  const label = String(req.body?.label || '').trim().slice(0, 40);
   let proxy;
   try { proxy = normalizeProxy(req.body?.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
   const lines = String(cookies || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -148,12 +158,13 @@ app.post('/api/accounts', async (req, res) => {
       const dup = db.prepare('SELECT id FROM accounts WHERE email = ?').get(user.email);
       if (dup) {
         db.prepare("UPDATE accounts SET cookie_enc = ?, auth_state = 'pending', archived_at = NULL, paused = 0 WHERE id = ?").run(encrypt(cookie), dup.id);
+        if (lines.length === 1 && label) db.prepare('UPDATE accounts SET label = ? WHERE id = ?').run(label, dup.id);
         results.push({ ok: true, email: user.email, updated: true, id: dup.id });
         continue;
       }
-      // Tên acc = email đăng ký trên EarnApp, không cho tự đặt
-      const r = db.prepare('INSERT INTO accounts(email, note, group_name, cookie_enc, proxy, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(user.email, note, group_name, encrypt(cookie), proxy, Date.now());
+      // Tên riêng chỉ áp dụng khi thêm 1 acc (thêm nhiều acc cùng lúc thì để trống, đặt sau)
+      const r = db.prepare('INSERT INTO accounts(email, label, note, group_name, cookie_enc, proxy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(user.email, lines.length === 1 && label ? label : null, note, group_name, encrypt(cookie), proxy, Date.now());
       addEvent({ account_id: Number(r.lastInsertRowid), type: 'account_added', message: `Đã thêm acc ${user.email}` });
       results.push({ ok: true, email: user.email, id: Number(r.lastInsertRowid) });
     } catch (e) {
@@ -172,6 +183,7 @@ app.patch('/api/accounts/:id', async (req, res) => {
   const b = req.body || {};
   const fields = {};
   for (const k of ['note', 'group_name']) if (k in b) fields[k] = String(b[k] ?? '');
+  if ('label' in b) fields.label = String(b.label ?? '').trim().slice(0, 40) || null;
   if ('proxy' in b) {
     try { fields.proxy = normalizeProxy(b.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
   }
@@ -189,7 +201,7 @@ app.patch('/api/accounts/:id', async (req, res) => {
     }
   }
   if (b.dismiss_suspect) { fields.suspect_reason = ''; fields.suspect_ack = 1; }
-  // Running/Stopped luôn tự động theo máy. Người dùng chỉ được đánh dấu / bỏ đánh dấu bị khoá.
+  // Running/Stopped luôn tự động theo node. Người dùng chỉ được đánh dấu / bỏ đánh dấu bị khoá.
   if ('banned' in b) {
     if (b.banned) {
       fields.status = 'banned';
@@ -217,16 +229,16 @@ app.patch('/api/accounts/:id', async (req, res) => {
     db.prepare(`UPDATE accounts SET ${Object.keys(fields).map(k => `${k} = @${k}`).join(', ')} WHERE id = @id`).run({ ...fields, id: acc.id });
   }
   if ('archived_at' in fields) {
-    // Máy của acc lưu trữ không hiện trong danh sách máy, không bị tính là rớt mạng. Khôi phục thì lần đồng bộ tới tự hiện lại.
+    // Node của acc lưu trữ không hiện trong danh sách node, không bị tính là rớt mạng. Khôi phục thì lần đồng bộ tới tự hiện lại.
     if (fields.archived_at) db.prepare("UPDATE devices SET missing = 1, online = 0, status = 'offline' WHERE account_id = ?").run(acc.id);
     addEvent({ account_id: acc.id, type: 'account_archived', level: 'info',
-      message: fields.archived_at ? `${acc.label || acc.email}: đã lưu trữ, ngừng theo dõi (số liệu cũ vẫn giữ)` : `${acc.label || acc.email}: khôi phục từ lưu trữ, theo dõi lại` });
+      message: fields.archived_at ? `${fullName(acc)}: đã lưu trữ, ngừng theo dõi (số liệu cũ vẫn giữ)` : `${fullName(acc)}: khôi phục từ lưu trữ, theo dõi lại` });
   }
   if (fields.status && fields.status !== acc.status && !('archived_at' in fields)) {
     addEvent({ account_id: acc.id, type: 'account_status', level: fields.status === 'banned' ? 'critical' : 'info',
       message: fields.status === 'banned'
-        ? `${acc.label || acc.email}: được đánh dấu bị khoá, số dư ${'$' + acc.balance.toFixed(2)} tính vào "Mất do bị khoá"`
-        : `${acc.label || acc.email}: bỏ đánh dấu bị khoá, trạng thái tự động trở lại` });
+        ? `${fullName(acc)}: được đánh dấu bị khoá, số dư ${'$' + acc.balance.toFixed(2)} tính vào "Mất do bị khoá"`
+        : `${fullName(acc)}: bỏ đánh dấu bị khoá, trạng thái tự động trở lại` });
   }
   if (b.cookie || ('archived_at' in fields && !fields.archived_at)) runCycle([acc.id]).catch(() => {});
   res.json({ ok: true });
@@ -272,10 +284,12 @@ app.get('/api/withdraw', (req, res) => {
     methods: PAYOUT_METHODS,
     payout_emails: config.payoutEmails,
     timezone: getSettings().timezone,
+    progress: withdrawProgress(), // { [account_id]: { state: queued | running, step, since, manual } }
+    now: Date.now(),
     accounts: db.prepare(`SELECT a.id, a.email, a.label, a.group_name, a.balance, a.status, a.auth_state, a.archived_at, a.redeem_details,
         w.mode, w.run_date, w.weekdays, w.time, w.method, w.email AS pay_email, w.enabled, w.next_run_at, w.last_run_at, w.last_status, w.last_message
       FROM accounts a LEFT JOIN withdraw_schedules w ON w.account_id = a.id ORDER BY a.archived_at IS NOT NULL, a.id`).all(),
-    log: db.prepare(`SELECT l.*, COALESCE(a.label, a.email) AS account FROM withdraw_log l JOIN accounts a ON a.id = l.account_id ORDER BY l.id DESC LIMIT 100`).all(),
+    log: db.prepare(`SELECT l.*, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account, a.label, a.email AS acc_email FROM withdraw_log l JOIN accounts a ON a.id = l.account_id ORDER BY l.id DESC LIMIT 100`).all(),
   });
 });
 
@@ -322,30 +336,35 @@ app.delete('/api/withdraw/:id', (req, res) => {
 });
 
 app.post('/api/withdraw/:id/run', async (req, res) => {
-  if (!checkPassword(req, res)) return;
   const id = Number(req.params.id);
-  const sch = db.prepare('SELECT email FROM withdraw_schedules WHERE account_id = ?').get(id);
-  if (sch) notifyChange([id], `bấm Rút ngay tới ${sch.email}`, req.ip);
-  const r = await runWithdraw(id, { manual: true });
+  const acc = db.prepare('SELECT id, email FROM accounts WHERE id = ?').get(id);
+  if (!acc) return res.status(404).json({ error: 'Không tìm thấy acc' });
+  // Có gửi method/email: rút ngay tới đó, không cần lịch. Không gửi: dùng phương thức + email trong lịch đã lưu
+  let target = null;
+  if (req.body?.method || req.body?.email) {
+    try { target = validateTarget(req.body, acc.email); } catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  if (!checkPassword(req, res)) return;
+  // Không báo riêng lúc bấm: tin kết quả (luôn gửi) đã ghi IP người bấm, tránh 1 lần rút ra nhiều tin
+  const r = await runWithdraw(id, { manual: true, target, ip: req.ip });
   res.status(r.status === 'ok' ? 200 : 400).json(r.status === 'ok' ? r : { ...r, error: r.message });
 });
 
-// ---------- Máy, giao dịch, sự kiện ----------
 app.get('/api/devices', (req, res) => {
   res.json(db.prepare(`
-    SELECT d.*, COALESCE(a.label, a.email) AS account, a.last_ok_at,
+    SELECT d.*, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account, a.label, a.email, a.group_name, a.last_ok_at,
       COALESCE((SELECT last_total - first_total FROM device_daily dd WHERE dd.uuid = d.uuid AND dd.date = ?), 0) AS today,
       COALESCE((SELECT bytes FROM device_usage u WHERE u.uuid = d.uuid AND u.date = ?), 0) AS usage_today
     FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.missing = 0 ORDER BY a.id, d.title`).all(todayStr(), usageToday()));
 });
 
 app.get('/api/transactions', (req, res) => {
-  res.json(db.prepare(`SELECT t.*, COALESCE(a.label, a.email) AS account FROM transactions t JOIN accounts a ON a.id = t.account_id ORDER BY t.date DESC`).all());
+  res.json(db.prepare(`SELECT t.*, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account, a.label, a.email, a.group_name FROM transactions t JOIN accounts a ON a.id = t.account_id ORDER BY t.date DESC`).all());
 });
 
 app.get('/api/events', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 100, 500);
-  res.json(db.prepare(`SELECT e.*, COALESCE(a.label, a.email) AS account FROM events e LEFT JOIN accounts a ON a.id = e.account_id ORDER BY e.id DESC LIMIT ?`).all(limit));
+  res.json(db.prepare(`SELECT e.*, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account FROM events e LEFT JOIN accounts a ON a.id = e.account_id ORDER BY e.id DESC LIMIT ?`).all(limit));
 });
 
 // ---------- Báo cáo ----------
@@ -387,6 +406,12 @@ app.put('/api/settings', (req, res) => {
   for (const k of ['sync_min_min', 'sync_max_min', 'account_delay_sec', 'idle_hours', 'offline_grace_min', 'usd_vnd', 'daily_report_hour', 'error_alert_count']) {
     if (k in b) b[k] = Math.max(k === 'daily_report_hour' ? 0 : 1, Number(b[k]) || 0);
   }
+  if (typeof b.telegram_chat_id === 'string') {
+    const ids = chatIds(b.telegram_chat_id);
+    const bad = ids.filter(id => !validChatId(id));
+    if (bad.length) return res.status(400).json({ error: `Chat ID không hợp lệ: ${bad.join(', ')}. Chat riêng là số dương, nhóm là số âm (VD -1001234567890), kênh là @tenkenh` });
+    b.telegram_chat_id = ids.join(', ');
+  }
   const cur = getSettings();
   if (Number(b.sync_max_min ?? cur.sync_max_min) < Number(b.sync_min_min ?? cur.sync_min_min)) {
     return res.status(400).json({ error: 'Thời gian tối đa phải lớn hơn hoặc bằng tối thiểu' });
@@ -398,8 +423,12 @@ app.put('/api/settings', (req, res) => {
 
 app.post('/api/settings/telegram-test', async (req, res) => {
   try {
-    const ok = await sendTelegram('✅ Kết nối Telegram thành công! Bạn sẽ nhận cảnh báo EarnApp tại đây.');
-    res.json(ok ? { ok: true } : { error: 'Chưa nhập Bot token hoặc Chat ID' });
+    const r = await sendTelegramEach('✅ Kết nối Telegram thành công! Bạn sẽ nhận cảnh báo EarnApp tại đây.');
+    if (!r.length) return res.json({ error: 'Chưa nhập Bot token hoặc Chat ID' });
+    const failed = r.filter(x => !x.ok);
+    if (!failed.length) return res.json({ ok: true, sent: r.length });
+    const okPart = r.length > failed.length ? `Đã gửi tới ${r.length - failed.length}/${r.length} nơi. ` : '';
+    res.status(400).json({ error: okPart + failed.map(f => `Lỗi ${f.chat}: ${f.error.replace(/^Telegram: /, '')}`).join('; ') });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -414,33 +443,63 @@ function csv(rows, cols) {
   return '﻿' + [cols.map(c => c[1]).join(','), ...rows.map(r => cols.map(c => escCell(r[c[0]])).join(','))].join('\r\n');
 }
 
+// Trạng thái bằng tiếng Việt trong file Excel
+const ACC_STATUS_VI = { running: 'Đang chạy', stopped: 'Đã dừng', banned: 'Bị khoá' };
+const DEV_STATUS_VI = { online: 'Đang chạy', idle: 'Lâu không tăng tiền', offline: 'Rớt mạng', banned: 'Bị ban', unknown: 'Chưa rõ' };
+const TX_STATUS_VI = { paid: 'Đã nhận', pending_procedure: 'Đang xử lý', approved: 'Đã duyệt', pending: 'Đang chờ' };
+const BAN_REASON_VI = { earnapp_blacklist: 'IP trong danh sách đen', ip_quality: 'IP chất lượng kém' };
+// Mọi file đều mở đầu bằng Máy / Tên / Email và xếp acc cùng một thứ tự như trên web
+const ACC_COLS = [['group_name', 'Máy'], ['label', 'Tên'], ['email', 'Email']];
+const ACC_JOIN = 'a.group_name, a.label, a.email';
+
 app.get('/api/export/:type', (req, res) => {
-  const fmtTs = ts => ts ? new Date(ts).toLocaleString('vi-VN', { timeZone: getSettings().timezone }) : '';
+  const tz = getSettings().timezone;
+  const fmtTs = ts => ts ? new Date(ts).toLocaleString('vi-VN', { timeZone: tz }) : '';
+  const fmtDay = d => d ? new Date(d).toLocaleDateString('vi-VN', { timeZone: tz }) : '';
+  const usd2 = n => n == null ? '' : Number(n).toFixed(2);
   let rows, cols;
   if (req.params.type === 'accounts') {
-    rows = db.prepare(ACCOUNT_LIST_SQL + ' ORDER BY a.id').all(todayStr(), usageToday()).map(r => ({ ...r, last_sync_at: fmtTs(r.last_sync_at), usage_mb: (r.usage_today / 1e6).toFixed(1) }));
-    cols = [['email', 'Email'], ['label', 'Tên'], ['group_name', 'Nhóm'], ['status', 'Trạng thái'], ['earnings_total', 'Lifetime ($)'], ['balance', 'Số dư ($)'],
-      ['withdrawn', 'Đã rút ($)'], ['pending', 'Đang chờ rút ($)'], ['dev_online', 'Máy online'], ['dev_offline', 'Máy offline'], ['dev_banned', 'Máy bị ban'], ['usage_mb', 'Dung lượng hôm nay (MB)'], ['note', 'Ghi chú'], ['last_sync_at', 'Cập nhật lúc']];
+    rows = db.prepare(ACCOUNT_LIST_SQL).all(todayStr(), usageToday()).sort(byAccount).map(r => ({
+      ...r, status_vi: r.archived_at ? 'Lưu trữ' : withStale(r).stale && r.status !== 'banned' ? 'Chưa rõ' : ACC_STATUS_VI[r.status] || r.status, proxy_vi: proxyInfo(r.proxy),
+      today: Number(r.today).toFixed(3), earnings_total: usd2(r.earnings_total), balance: usd2(r.balance), withdrawn: usd2(r.withdrawn), pending: usd2(r.pending),
+      last_ok_at: fmtTs(r.last_ok_at), usage_mb: (r.usage_today / 1e6).toFixed(1),
+    }));
+    cols = [...ACC_COLS, ['status_vi', 'Trạng thái'], ['dev_online', 'Node chạy'], ['dev_idle', 'Node lâu không tăng tiền'], ['dev_offline', 'Node rớt mạng'], ['dev_banned', 'Node bị ban'],
+      ['today', 'Hôm nay ($)'], ['usage_mb', 'Dung lượng hôm nay (MB)'], ['balance', 'Số dư ($)'], ['withdrawn', 'Đã rút ($)'], ['pending', 'Đang chờ rút ($)'],
+      ['earnings_total', 'Tổng kiếm ($)'], ['proxy_vi', 'Proxy'], ['note', 'Ghi chú'], ['last_ok_at', 'Cập nhật lúc']];
   } else if (req.params.type === 'transactions') {
-    rows = db.prepare('SELECT t.*, a.email FROM transactions t JOIN accounts a ON a.id = t.account_id ORDER BY t.date DESC').all();
-    cols = [['email', 'Email'], ['date', 'Ngày tạo'], ['amount', 'Số tiền ($)'], ['fee', 'Phí ($)'], ['payment_method', 'Phương thức'], ['status', 'Trạng thái'], ['payment_date', 'Ngày thanh toán']];
+    rows = db.prepare(`SELECT t.*, ${ACC_JOIN} FROM transactions t JOIN accounts a ON a.id = t.account_id`).all()
+      .sort((x, y) => byAccount(x, y) || String(y.date).localeCompare(String(x.date)))
+      .map(r => ({ ...r, date: fmtDay(r.date), payment_date: fmtDay(r.payment_date), method: methodName(r.payment_method), status_vi: TX_STATUS_VI[r.status] || r.status, amount: usd2(r.amount), fee: usd2(r.fee) }));
+    cols = [...ACC_COLS, ['date', 'Ngày tạo lệnh'], ['amount', 'Số tiền ($)'], ['fee', 'Phí ($)'], ['method', 'Phương thức'], ['status_vi', 'Trạng thái'], ['payment_date', 'Ngày nhận tiền']];
   } else if (req.params.type === 'devices') {
-    rows = db.prepare('SELECT d.*, a.email FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.missing = 0').all();
-    cols = [['email', 'Email'], ['title', 'Tên máy'], ['uuid', 'UUID'], ['status', 'Trạng thái'], ['country', 'Quốc gia'], ['earned_total', 'Tổng kiếm ($)'], ['banned_reason', 'Lý do ban']];
+    rows = db.prepare(`SELECT d.*, ${ACC_JOIN},
+        COALESCE((SELECT last_total - first_total FROM device_daily dd WHERE dd.uuid = d.uuid AND dd.date = ?), 0) AS today,
+        COALESCE((SELECT bytes FROM device_usage u WHERE u.uuid = d.uuid AND u.date = ?), 0) AS usage_today
+      FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.missing = 0`).all(todayStr(), usageToday())
+      .sort((x, y) => byAccount(x, y) || cmp(x.title, y.title))
+      .map(r => ({ ...r, status_vi: DEV_STATUS_VI[r.status] || r.status, country: (r.country || '').toUpperCase(), ban_vi: r.banned_reason ? BAN_REASON_VI[r.banned_reason] || r.banned_reason : '',
+        today: Number(r.today).toFixed(3), usage_mb: (r.usage_today / 1e6).toFixed(1), earned_total: Number(r.earned_total || 0).toFixed(3), last_online: fmtTs(r.last_online_at) }));
+    cols = [...ACC_COLS, ['title', 'Node'], ['status_vi', 'Trạng thái'], ['country', 'Quốc gia'], ['today', 'Hôm nay ($)'], ['usage_mb', 'Dung lượng hôm nay (MB)'],
+      ['earned_total', 'Tổng kiếm ($)'], ['ban_vi', 'Lý do ban'], ['last_online', 'Online lần cuối'], ['uuid', 'Mã node']];
   } else if (req.params.type === 'report') {
     const r = report(req.query);
-    rows = r.accounts.map(a => ({ ...a, usage_gb: (a.usage / 1e9).toFixed(3), uptime_pct: a.uptime == null ? '' : (a.uptime * 100).toFixed(1), share_pct: (a.share * 100).toFixed(1) }));
-    cols = [['name', 'Tài khoản'], ['email', 'Email'], ['group', 'Nhóm'], ['status', 'Trạng thái'], ['earned', `Thu nhập ${r.from} → ${r.to} ($)`],
-      ['prev_earned', 'Kỳ trước ($)'], ['share_pct', 'Tỷ trọng (%)'], ['usage_gb', 'Dung lượng (GB)'], ['per_gb', '$/GB'], ['devices', 'Máy hoạt động'],
-      ['per_device_day', '$/máy/ngày'], ['uptime_pct', 'Uptime (%)'], ['payouts', 'Đã rút trong kỳ ($)'], ['balance', 'Số dư ($)'], ['lifetime', 'Lifetime ($)']];
+    rows = r.accounts.map(a => ({ ...a, group_name: a.group, status_vi: ACC_STATUS_VI[a.status] || a.status, usage_gb: (a.usage / 1e9).toFixed(3), balance: usd2(a.balance), lifetime: usd2(a.lifetime), payouts: usd2(a.payouts),
+      uptime_pct: a.uptime == null ? '' : (a.uptime * 100).toFixed(1), share_pct: (a.share * 100).toFixed(1) })).sort(byAccount);
+    cols = [...ACC_COLS, ['status_vi', 'Trạng thái'], ['earned', `Thu nhập ${r.from.split('-').reverse().join('/')} → ${r.to.split('-').reverse().join('/')} ($)`],
+      ['prev_earned', 'Kỳ trước ($)'], ['share_pct', 'Tỷ trọng (%)'], ['usage_gb', 'Dung lượng (GB)'], ['per_gb', '$/GB'], ['devices', 'Node hoạt động'],
+      ['per_device_day', '$/node/ngày'], ['uptime_pct', 'Online (%)'], ['payouts', 'Tiền về trong kỳ ($)'], ['balance', 'Số dư ($)'], ['lifetime', 'Tổng kiếm ($)']];
   } else if (req.params.type === 'usage') {
-    rows = db.prepare(`SELECT u.date, a.email, COALESCE(d.title, u.uuid) AS title, u.bytes FROM device_usage u
-      JOIN accounts a ON a.id = u.account_id LEFT JOIN devices d ON d.uuid = u.uuid ORDER BY u.date DESC, a.email, title`).all()
-      .map(r => ({ ...r, mb: (r.bytes / 1e6).toFixed(2) }));
-    cols = [['date', 'Ngày'], ['email', 'Email'], ['title', 'Máy'], ['mb', 'Dung lượng (MB)'], ['bytes', 'Byte']];
+    rows = db.prepare(`SELECT u.date, ${ACC_JOIN}, COALESCE(d.title, u.uuid) AS title, u.bytes FROM device_usage u
+      JOIN accounts a ON a.id = u.account_id LEFT JOIN devices d ON d.uuid = u.uuid`).all()
+      .sort((x, y) => String(y.date).localeCompare(String(x.date)) || byAccount(x, y) || cmp(x.title, y.title))
+      .map(r => ({ ...r, day: r.date.split('-').reverse().join('/'), mb: (r.bytes / 1e6).toFixed(2) }));
+    cols = [['day', 'Ngày'], ...ACC_COLS, ['title', 'Node'], ['mb', 'Dung lượng (MB)']];
   } else if (req.params.type === 'snapshots') {
-    rows = db.prepare('SELECT s.*, a.email FROM balance_snapshots s JOIN accounts a ON a.id = s.account_id ORDER BY s.account_id, s.ts').all().map(r => ({ ...r, ts: fmtTs(r.ts) }));
-    cols = [['email', 'Email'], ['ts', 'Thời điểm'], ['balance', 'Số dư ($)'], ['earnings_total', 'Lifetime ($)']];
+    rows = db.prepare(`SELECT s.*, ${ACC_JOIN} FROM balance_snapshots s JOIN accounts a ON a.id = s.account_id`).all()
+      .sort((x, y) => byAccount(x, y) || x.ts - y.ts)
+      .map(r => ({ ...r, ts: fmtTs(r.ts), balance: Number(r.balance).toFixed(3), earnings_total: Number(r.earnings_total).toFixed(3) }));
+    cols = [...ACC_COLS, ['ts', 'Thời điểm'], ['balance', 'Số dư ($)'], ['earnings_total', 'Tổng kiếm ($)']];
   } else return res.status(404).end();
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="earnapp-${req.params.type}-${todayStr()}.csv"`);

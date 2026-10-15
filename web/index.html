@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#4f46e5" />
+    <meta name="theme-color" content="#ffffff" />
     <title>EarnApp Manager</title>
     <script>
       // Áp dụng giao diện sáng/tối trước khi render để tránh nháy
-      const t = localStorage.getItem('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      // Mặc định giao diện sáng, chỉ tối khi người dùng tự chọn
+      const t = localStorage.getItem('theme') || 'light';
       document.documentElement.classList.toggle('dark', t === 'dark');
     </script>
   </head>

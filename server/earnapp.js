@@ -121,11 +121,16 @@ export class EarnAppClient {
   }
 
   /** Lấy toàn bộ dữ liệu cần thiết của 1 tài khoản */
-  async fetchAll({ withMonthly = false } = {}) {
+  async fetchAll({ withMonthly = false, onStep = () => {} } = {}) {
     const gap = () => sleep(300 + Math.random() * 500);
-    const user = await this.call('user_data'); await gap();
-    const money = await this.call('money'); await gap();
-    const devices = await this.call('devices'); await gap();
+    // Báo tiến độ cho giao diện: onStep(phần đã xong 0..1, việc đang làm)
+    const total = withMonthly ? 7 : 6;
+    let done = 0;
+    const step = (label, part = 1) => { done += part; onStep(Math.min(done / total, 1), label); };
+    onStep(0, 'Đang lấy thông tin tài khoản');
+    const user = await this.call('user_data'); step('Đang lấy số dư'); await gap();
+    const money = await this.call('money'); step('Đang lấy danh sách node'); await gap();
+    const devices = await this.call('devices'); step(`Đang lấy trạng thái ${devices.length} node`); await gap();
     const fetchStatuses = async () => {
       const out = {};
       for (let i = 0; i < devices.length; i += 100) {
@@ -141,15 +146,18 @@ export class EarnAppClient {
       await sleep(3000);
       statuses = await fetchStatuses();
     }
-    const transactions = await this.call('transactions'); await gap();
+    step('Đang lấy lịch sử rút tiền');
+    const transactions = await this.call('transactions'); step('Đang lấy dung lượng'); await gap();
     // Dung lượng không bắt buộc: lỗi thì bỏ qua, không làm hỏng cả lần đồng bộ
     let usage = null;
     try { usage = await this.call('usage?step=daily'); } catch (e) { if (e instanceof AuthError || e instanceof RateLimitError) throw e; }
     let usageMonthly = null;
     if (withMonthly) {
+      step('Đang lấy dung lượng theo tháng');
       await gap();
       try { usageMonthly = await this.call('usage?step=monthly'); } catch (e) { if (e instanceof AuthError || e instanceof RateLimitError) throw e; }
     }
+    step('Đang lưu dữ liệu', total);
     return { user, money, devices, statuses, transactions, usage, usageMonthly };
   }
 }

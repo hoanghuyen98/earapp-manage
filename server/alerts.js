@@ -1,4 +1,5 @@
 import { esc } from './telegram.js';
+import { fullName } from './accname.js';
 
 // Soạn tin Telegram từ danh sách cảnh báo.
 // Mỗi mục: 1 dòng tiêu đề in đậm, vài dòng "•" chi tiết, 1 dòng "👉" việc cần làm (nếu có).
@@ -6,10 +7,12 @@ import { esc } from './telegram.js';
 
 const BAN_REASON = {
   earnapp_blacklist: 'IP bị đưa vào danh sách đen', earnapp_ip_blacklist: 'IP bị đưa vào danh sách đen',
-  earnapp_device_blacklist: 'máy bị chặn', ip_quality: 'IP chất lượng kém', fraud_score: 'IP bị đánh giá rủi ro cao',
+  earnapp_device_blacklist: 'node bị chặn', ip_quality: 'IP chất lượng kém', fraud_score: 'IP bị đánh giá rủi ro cao',
   ip_type: 'loại IP không được chấp nhận', country: 'quốc gia không được hỗ trợ',
 };
 const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise', 'wise.com': 'Wise' };
+// Ai bấm Rút ngay (lịch tự động thì ghi "theo lịch")
+const byLine = a => a.manual ? `\n• Bấm Rút ngay trên web${a.ip ? ` (IP ${esc(a.ip)})` : ''}` : '\n• Rút theo lịch hẹn';
 export const methodName = m => METHOD[m] || (/^amazon/.test(m || '') ? 'Amazon Gift Card' : m || '—');
 
 /** Lỗi kỹ thuật -> câu dễ hiểu */
@@ -46,7 +49,7 @@ export function formatAlerts(alerts, s) {
   const hhmm = ts => new Intl.DateTimeFormat('vi-VN', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(ts);
   const ddmm = ts => new Intl.DateTimeFormat('en-GB', { timeZone: tz, day: '2-digit', month: '2-digit' }).format(ts);
   const when = ts => ddmm(ts) === ddmm(Date.now()) ? hhmm(ts) : `${hhmm(ts)} ${ddmm(ts)}`;
-  const accName = a => a.email || a.label || `Acc #${a.account_id}`;
+  const accName = fullName;
 
   // Một mục cho 1 nhóm cảnh báo cùng loại (g) của 1 acc, hoặc gộp nhiều acc (merged = true)
   function item(type, g, merged = false) {
@@ -70,11 +73,12 @@ export function formatAlerts(alerts, s) {
       case 'account_suspect':
         return `❓ <b>Nghi acc bị khoá</b>\n• Dấu hiệu: ${esc(a.why)}\n• Web đang giữ số dư cũ ${usd(a.amount)}\n👉 Kiểm tra trên EarnApp, rồi mở acc trên web bấm "Đúng, bị khoá" hoặc "Không phải"`;
       case 'withdraw_failed':
-        return `❌ <b>Rút tiền THẤT BẠI</b>\n• Lý do: ${esc(a.why)}\n👉 Vào web: Rút tiền → Hẹn giờ rút để kiểm tra`;
+        return `❌ <b>Rút tiền THẤT BẠI</b>\n• Lý do: ${esc(a.why)}` + byLine(a) + `\n👉 Vào web: Rút tiền → Hẹn giờ rút để kiểm tra`;
       case 'withdraw_skipped':
         return `⏭ <b>Bỏ qua lần rút theo lịch</b>\n• ${esc(a.why)}\n• Lịch hằng tuần vẫn giữ, lần sau rút tiếp`;
       case 'withdraw_ok':
-        return `💰 <b>Đã gửi lệnh rút ${usd(a.amount)}</b>\n• Qua ${esc(methodName(a.method))} → ${esc(a.to)}\n• Chờ EarnApp duyệt và chuyển tiền`;
+        return `💰 <b>Đã gửi lệnh rút ${usd(a.amount)}</b>\n• Qua ${esc(methodName(a.method))} → ${esc(a.to)}` + byLine(a) + `\n• Chờ EarnApp duyệt và chuyển tiền`
+          + (a.manual ? '\n👉 Không phải bạn bấm: đổi mật khẩu web ngay' : '');
       case 'auth':
         return `🔑 <b>${head('Cookie hết hạn')}</b>, web không lấy được dữ liệu` + accList()
           + '\n👉 Đăng nhập lại EarnApp, lấy cookie mới, dán vào web: Tài khoản → Sửa → Cập nhật cookie';
@@ -82,7 +86,7 @@ export function formatAlerts(alerts, s) {
         const since = Math.min(...g.map(x => x.since || Infinity));
         return `⚠️ <b>${head('Không lấy được dữ liệu mới')}</b>` + accList()
           + `\n• Lỗi: ${esc(explainError(a.why))}`
-          + (Number.isFinite(since) ? `\n• Số liệu trên web đang dừng từ ${when(since)}, máy sẽ hiện "Chưa rõ"` : '\n• Số liệu trên web đang dừng ở lần cập nhật cuối')
+          + (Number.isFinite(since) ? `\n• Số liệu trên web đang dừng từ ${when(since)}, node sẽ hiện "Chưa rõ"` : '\n• Số liệu trên web đang dừng ở lần cập nhật cuối')
           + `\n👉 ${a.proxy ? 'Kiểm tra proxy của acc còn sống không, hết hạn thì đổi proxy mới' : 'Mở thử earnapp.com/dashboard trên trình duyệt: không vào được thì chờ EarnApp hoạt động lại'}`;
       }
       case 'sync_ok':
@@ -91,19 +95,19 @@ export function formatAlerts(alerts, s) {
         return `⏳ <b>${head('Bị EarnApp giới hạn truy cập')}</b> (gọi quá nhiều)` + accList()
           + '\n• Web tự giãn thời gian chờ rồi thử lại\n👉 Kéo dài thì tăng thời gian lấy dữ liệu trong Cài đặt hoặc gắn proxy cho acc';
       case 'device_banned':
-        return `🚫 <b>${n} máy bị BAN</b>, không kiếm tiền được\n${list(g, x => `${esc(x.device)}: ${esc(BAN_REASON[x.reason] || x.reason)}`)}\n👉 Đổi IP / proxy cho máy`;
+        return `🔺 <b>${n} node bị BAN</b>, không kiếm tiền được\n${list(g, x => `${esc(x.device)}: ${esc(BAN_REASON[x.reason] || x.reason)}`)}\n👉 Đổi IP / proxy cho node`;
       case 'device_offline':
-        return `🔴 <b>${n} máy RỚT MẠNG</b> (quá ${s.offline_grace_min} phút)\n${list(g, x => `${esc(x.device)}${x.last_seen ? `, online lần cuối ${when(x.last_seen)}` : ''}`)}\n👉 Kiểm tra máy còn bật, còn mạng, app EarnApp còn chạy`;
+        return `⚫ <b>${n} node RỚT MẠNG</b> (quá ${s.offline_grace_min} phút)\n${list(g, x => `${esc(x.device)}${x.last_seen ? `, online lần cuối ${when(x.last_seen)}` : ''}`)}\n👉 Kiểm tra máy còn bật, proxy còn sống, app EarnApp còn chạy`;
       case 'device_idle':
-        return `🟡 <b>${n} máy online nhưng KHÔNG RA TIỀN</b> (${s.idle_hours} giờ không tăng)\n${list(g, x => esc(x.device))}\n👉 Khởi động lại app EarnApp hoặc đổi IP`;
+        return `🟡 <b>${n} node LÂU KHÔNG TĂNG TIỀN</b> (vẫn online nhưng ${Math.min(...g.map(x => x.hours || s.idle_hours))} giờ không tăng)\n${list(g, x => esc(x.device))}\n👉 Khởi động lại app EarnApp hoặc đổi IP`;
       case 'payout_new':
         return g.map(x => `💸 <b>Lệnh rút mới ${usd(x.amount)}</b>\n• Qua ${esc(methodName(x.method))}, đang chờ EarnApp xử lý`).join('\n\n');
       case 'payout_paid':
         return g.map(x => `✅ <b>Tiền đã về: ${money(x.amount)}</b>\n• Qua ${esc(methodName(x.method))}`).join('\n\n');
       case 'device_online':
-        return `🟢 <b>${n} máy chạy lại</b>\n${list(g, x => esc(x.device))}`;
+        return `🟢 <b>${n} node chạy lại</b>\n${list(g, x => esc(x.device))}`;
       case 'device_unbanned':
-        return `♻️ <b>${n} máy được gỡ ban</b>, kiếm tiền lại bình thường\n${list(g, x => esc(x.device))}`;
+        return `♻️ <b>${n} node được gỡ ban</b>, kiếm tiền lại bình thường\n${list(g, x => esc(x.device))}`;
     }
     return null;
   }

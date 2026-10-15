@@ -1,3 +1,4 @@
+import { byAccount, cmp } from './accname.js';
 import { db, getSettings } from './db.js';
 import { localDate, addDays, usageToday, staleMs } from './stats.js';
 
@@ -42,6 +43,8 @@ function dataDays(ids, from, to) {
 }
 
 function nameOf(a) { return a.label || a.email || `Acc #${a.id}`; }
+/** Có tên riêng thì kèm email: "A1 · a@gmail.com" */
+function fullName(a) { return a.label ? `${a.label} · ${a.email}` : a.email || `Acc #${a.id}`; }
 
 /** $/giờ hiện tại: so tổng kiếm bây giờ với bản lưu số dư cách đây 6 giờ (tối thiểu 3 giờ).
  *  EarnApp cộng tiền theo đợt (~1 giờ/lần) nên khoảng ngắn hơn sẽ bị phóng đại. */
@@ -123,7 +126,7 @@ function accountRows(ids, today) {
 function groupRows(rows, keys) {
   const map = new Map();
   for (const r of rows) {
-    const g = r.group || 'Chưa có nhóm';
+    const g = r.group || 'Chưa gán máy';
     if (!map.has(g)) map.set(g, { group: g, accounts: 0 });
     const t = map.get(g);
     t.accounts++;
@@ -132,20 +135,20 @@ function groupRows(rows, keys) {
   return [...map.values()];
 }
 
-/** Việc cần xử lý: gom theo loại, kèm acc và máy */
+/** Việc cần xử lý: gom theo loại, kèm acc và node */
 function attention(ids) {
   const now = Date.now();
   const out = [];
   const accs = db.prepare(`SELECT * FROM accounts WHERE ${inScope(ids, 'id')} AND archived_at IS NULL`).all();
   for (const a of accs) {
-    if (a.suspect_reason) out.push({ type: 'suspect', level: 'critical', account_id: a.id, account: nameOf(a), detail: a.suspect_reason });
-    if (a.auth_state === 'expired') out.push({ type: 'auth', level: 'warning', account_id: a.id, account: nameOf(a), detail: 'Cookie hết hạn, cần dán cookie mới' });
+    if (a.suspect_reason) out.push({ type: 'suspect', level: 'critical', account_id: a.id, account: fullName(a), detail: a.suspect_reason });
+    if (a.auth_state === 'expired') out.push({ type: 'auth', level: 'warning', account_id: a.id, account: fullName(a), detail: 'Cookie hết hạn, cần dán cookie mới' });
     if (a.auth_state === 'error') {
       const since = a.last_ok_at ? new Date(a.last_ok_at).toLocaleString('vi-VN', { timeZone: getSettings().timezone, hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : null;
-      out.push({ type: 'error', level: 'warning', account_id: a.id, account: nameOf(a),
+      out.push({ type: 'error', level: 'warning', account_id: a.id, account: fullName(a),
         detail: `${since ? `Không lấy được dữ liệu mới từ ${since}, số liệu đang là của lúc đó. ` : ''}Lỗi: ${a.last_error}` });
     }
-    if (a.backoff_until > now) out.push({ type: 'limited', level: 'info', account_id: a.id, account: nameOf(a), detail: 'EarnApp đang giới hạn truy cập, web tự thử lại' });
+    if (a.backoff_until > now) out.push({ type: 'limited', level: 'info', account_id: a.id, account: fullName(a), detail: 'EarnApp đang giới hạn truy cập, web tự thử lại' });
   }
   const devs = db.prepare(`SELECT d.*, a.label, a.email, a.id AS aid FROM devices d JOIN accounts a ON a.id = d.account_id
     WHERE ${inScope(ids, 'd.account_id')} AND d.missing = 0 AND a.paused = 0 AND a.status != 'banned'
@@ -154,7 +157,7 @@ function attention(ids) {
   const groups = {};
   for (const d of devs) {
     const k = d.status + ':' + d.aid;
-    groups[k] ??= { type: 'device_' + d.status, level: d.status === 'banned' ? 'critical' : 'warning', account_id: d.aid, account: nameOf({ ...d, id: d.aid }), devices: [], since: d.status_changed_at };
+    groups[k] ??= { type: 'device_' + d.status, level: d.status === 'banned' ? 'critical' : 'warning', account_id: d.aid, account: fullName({ ...d, id: d.aid }), devices: [], since: d.status_changed_at };
     groups[k].devices.push(d.title);
   }
   out.push(...Object.values(groups));
@@ -241,7 +244,7 @@ export function overview(q = {}) {
     days, daily: dailyByAccount(ids, from, today, accounts), usage_daily: usageDaily(ids, addDays(uDay, -(days - 1)), uDay),
     rows, groups,
     attention: attention(ids),
-    events: db.prepare(`SELECT e.*, COALESCE(a.label, a.email) AS account FROM events e LEFT JOIN accounts a ON a.id = e.account_id
+    events: db.prepare(`SELECT e.*, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account FROM events e LEFT JOIN accounts a ON a.id = e.account_id
       WHERE ${ids ? inScope(ids, 'e.account_id') : '1'} ORDER BY e.id DESC LIMIT 12`).all(),
     usd_vnd: s.usd_vnd,
     data_since: db.prepare('SELECT MIN(date) AS d FROM account_daily').get().d,
@@ -299,7 +302,7 @@ export function report(q = {}) {
     const p = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS v FROM transactions WHERE account_id = ? AND status = 'paid'
       AND substr(payment_date, 1, 10) >= ? AND substr(payment_date, 1, 10) <= ?`).get(a.id, from, to).v;
     return {
-      id: a.id, name: nameOf(a), email: a.email, group: a.group_name || '', status: a.status,
+      id: a.id, name: nameOf(a), email: a.email, label: a.label, group: a.group_name || '', status: a.status,
       earned: round(e), prev_earned: round(earnRange(one, pFrom, pTo)), usage: u, per_gb: u > 1e8 ? round(e / (u / 1e9)) : null,
       devices: active, per_device_day: active && nd ? round(e / nd / active, 4) : null, uptime: uptimeRange(one, from, to),
       payouts: round(p, 2), balance: a.balance, lifetime: a.earnings_total, share: earned > 0 ? e / earned : 0,
@@ -321,8 +324,8 @@ export function report(q = {}) {
     return { month: ym, earned: round(e, 2), usage: um2, payouts: round(p, 2), cost_vnd: c == null ? null : Math.round(c), profit_vnd: c == null ? null : Math.round(e * s.usd_vnd - c), has_data: dataDays(ids, mStart, mEnd) > 0 };
   });
 
-  // Theo máy
-  const devices = db.prepare(`SELECT d.uuid, d.title, d.status, d.country, a.id AS account_id, COALESCE(a.label, a.email) AS account,
+  // Theo node
+  const devices = db.prepare(`SELECT d.uuid, d.title, d.status, d.country, a.id AS account_id, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account, a.label, a.email, a.group_name,
       COALESCE(SUM(dd.last_total - dd.first_total), 0) AS earned, SUM(dd.online_n) AS o, SUM(dd.check_n) AS c,
       COALESCE((SELECT SUM(bytes) FROM device_usage u WHERE u.uuid = d.uuid AND u.date >= ? AND u.date <= ?), 0) AS usage
     FROM devices d JOIN accounts a ON a.id = d.account_id
@@ -365,7 +368,8 @@ export function report(q = {}) {
 /** Danh sách acc + nhóm cho bộ lọc */
 export function scopeOptions() {
   return {
-    accounts: db.prepare('SELECT id, label, email, group_name, status FROM accounts ORDER BY id').all().map(a => ({ id: a.id, name: nameOf(a), email: a.email, group: a.group_name || '', status: a.status })),
-    groups: db.prepare("SELECT DISTINCT group_name AS g FROM accounts WHERE group_name != '' ORDER BY g").all().map(r => r.g),
+    accounts: db.prepare('SELECT id, label, email, group_name, status FROM accounts').all().sort(byAccount)
+      .map(a => ({ id: a.id, name: nameOf(a), email: a.email, label: a.label, group: a.group_name || '', status: a.status })),
+    groups: db.prepare("SELECT DISTINCT group_name AS g FROM accounts WHERE group_name != ''").all().map(r => r.g).sort(cmp),
   };
 }

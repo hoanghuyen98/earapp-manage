@@ -8,7 +8,7 @@
     "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
     "build": "npm --prefix web run build",
     "setup": "npm install && npm --prefix web install && npm run build",
-    "test": "node --disable-warning=ExperimentalWarning scripts/test-sync.mjs && node --disable-warning=ExperimentalWarning scripts/test-reports.mjs && node --disable-warning=ExperimentalWarning scripts/test-withdraw.mjs"
+    "test": "node --disable-warning=ExperimentalWarning scripts/test-sync.mjs && node --disable-warning=ExperimentalWarning scripts/test-reports.mjs && node --disable-warning=ExperimentalWarning scripts/test-withdraw.mjs && node --disable-warning=ExperimentalWarning scripts/test-telegram.mjs"
   },
   "engines": {
     "node": ">=22.13"

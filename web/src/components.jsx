@@ -4,7 +4,7 @@ import { ChevronDown, Check, Users, X, ArrowUp, ArrowDown, ArrowUpRight, ArrowDo
 import { api } from './lib';
 import { cx } from './ui';
 
-// ---------- Phạm vi lọc (tài khoản / nhóm), lưu trên URL + nhớ giữa các trang ----------
+// ---------- Phạm vi lọc (tài khoản / máy), lưu trên URL + nhớ giữa các trang ----------
 export function useScope() {
   const [params, setParams] = useSearchParams();
   const acc = params.get('acc') || '';
@@ -60,15 +60,15 @@ export function ScopeFilter({ scope }) {
   let label = 'Tất cả tài khoản';
   if (selected.length === 1) label = opts.accounts.find(a => a.id === selected[0])?.name || '1 tài khoản';
   else if (selected.length > 1) label = `${selected.length} tài khoản`;
-  if (scope.group) label = selected.length ? `${scope.group} · ${label}` : `Nhóm ${scope.group}`;
+  if (scope.group) label = selected.length ? `${scope.group} · ${label}` : `Máy ${scope.group}`;
 
   return (
     <div className="relative" ref={ref}>
       <div className="flex items-center">
         <button onClick={() => setOpen(!open)}
-          className={cx('flex h-10 max-w-64 items-center gap-2 rounded-xl px-3.5 text-sm font-medium ring-1 ring-inset transition cursor-pointer',
-            scope.active ? 'bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-500/30' : 'bg-white text-zinc-700 ring-zinc-200 hover:bg-zinc-50 dark:bg-zinc-800 dark:text-zinc-200 dark:ring-zinc-700')}>
-          <Users className="size-4 shrink-0" />
+          className={cx('flex h-9 max-w-64 items-center gap-2 rounded-xl px-3 text-sm font-medium ring-1 ring-inset transition cursor-pointer',
+            scope.active ? 'bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-500/10 dark:text-indigo-300 dark:ring-indigo-500/30' : 'bg-white text-zinc-700 ring-zinc-300/80 hover:bg-zinc-50 dark:bg-zinc-800 dark:text-zinc-200 dark:ring-zinc-700')}>
+          <Users className="size-4 shrink-0 opacity-60" />
           <span className="truncate">{label}</span>
           <ChevronDown className="size-4 shrink-0 opacity-60" />
         </button>
@@ -77,10 +77,10 @@ export function ScopeFilter({ scope }) {
         )}
       </div>
       {open && (
-        <div className="absolute right-0 z-40 mt-2 w-80 rounded-2xl border border-zinc-200 bg-white p-3 shadow-xl animate-fade-in dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="absolute right-0 z-40 mt-2 w-80 rounded-2xl border border-zinc-200 bg-white p-3 shadow-lg animate-fade-in dark:border-zinc-700 dark:bg-zinc-900">
           {opts.groups.length > 0 && (
             <div className="mb-3">
-              <div className="mb-1.5 text-xs font-medium text-zinc-500">Nhóm</div>
+              <div className="mb-1.5 text-xs font-medium text-zinc-500">Máy</div>
               <div className="flex flex-wrap gap-1.5">
                 {['', ...opts.groups].map(g => (
                   <button key={g || 'all'} onClick={() => scope.set({ acc: '', group: g })}
@@ -138,7 +138,7 @@ export function SortTable({ columns, rows, initialSort, onRowClick, footer, rowC
       if (x == null && y == null) return 0;
       if (x == null) return 1;
       if (y == null) return -1;
-      const c = typeof x === 'string' ? x.localeCompare(y, 'vi') : x - y;
+      const c = typeof x === 'string' ? x.localeCompare(y, 'vi', { numeric: true }) : x - y;
       return sort.dir === 'asc' ? c : -c;
     });
   }, [rows, sort, columns]);
@@ -147,9 +147,9 @@ export function SortTable({ columns, rows, initialSort, onRowClick, footer, rowC
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-zinc-100 text-xs text-zinc-500 dark:border-zinc-800">
+          <tr className="border-b border-zinc-200 bg-zinc-50/70 text-[11px] uppercase tracking-[.05em] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-800/30">
             {columns.map((c, i) => (
-              <th key={c.key} className={cx('py-2.5 font-medium whitespace-nowrap', i === 0 ? 'pl-5 pr-3' : i === columns.length - 1 ? 'pl-3 pr-5' : 'px-3', c.align === 'right' ? 'text-right' : 'text-left', hideCls[c.hide])}>
+              <th key={c.key} className={cx('py-2 font-medium whitespace-nowrap', i === 0 ? 'pl-5 pr-3' : i === columns.length - 1 ? 'pl-3 pr-5' : 'px-3', c.align === 'right' ? 'text-right' : 'text-left', hideCls[c.hide])}>
                 {c.sortable === false ? c.label : (
                   <button onClick={() => setSort(s => ({ key: c.key, dir: s.key === c.key && s.dir === 'desc' ? 'asc' : 'desc' }))}
                     className={cx('inline-flex items-center gap-1 hover:text-zinc-800 dark:hover:text-zinc-200 cursor-pointer', sort.key === c.key && 'text-zinc-800 dark:text-zinc-200')} title={c.title}>
@@ -166,7 +166,7 @@ export function SortTable({ columns, rows, initialSort, onRowClick, footer, rowC
             <tr key={r.id ?? r.uuid ?? r.group ?? r.country ?? ri} onClick={onRowClick ? () => onRowClick(r) : undefined}
               className={cx(onRowClick && 'cursor-pointer', 'hover:bg-zinc-50/80 dark:hover:bg-zinc-800/40', rowClass?.(r))}>
               {columns.map((c, i) => (
-                <td key={c.key} className={cx('py-3', i === 0 ? 'pl-5 pr-3' : i === columns.length - 1 ? 'pl-3 pr-5' : 'px-3', c.align === 'right' && 'text-right tabular', hideCls[c.hide], c.className)}>
+                <td key={c.key} className={cx('py-3', i === 0 ? 'pl-5 pr-3' : i === columns.length - 1 ? 'pl-3 pr-5' : 'px-3', c.align === 'right' && 'text-right tabular whitespace-nowrap', hideCls[c.hide], c.className)}>
                   {c.render ? c.render(r, ri) : r[c.key]}
                 </td>
               ))}
@@ -175,9 +175,9 @@ export function SortTable({ columns, rows, initialSort, onRowClick, footer, rowC
         </tbody>
         {footer && (
           <tfoot>
-            <tr className="border-t border-zinc-200 bg-zinc-50/60 text-sm font-semibold dark:border-zinc-800 dark:bg-zinc-800/30">
+            <tr className="border-t border-zinc-300 text-sm font-semibold dark:border-zinc-700">
               {columns.map((c, i) => (
-                <td key={c.key} className={cx('py-3', i === 0 ? 'pl-5 pr-3' : i === columns.length - 1 ? 'pl-3 pr-5' : 'px-3', c.align === 'right' && 'text-right tabular', hideCls[c.hide])}>
+                <td key={c.key} className={cx('py-3', i === 0 ? 'pl-5 pr-3' : i === columns.length - 1 ? 'pl-3 pr-5' : 'px-3', c.align === 'right' && 'text-right tabular whitespace-nowrap', hideCls[c.hide])}>
                   {footer[c.key] ?? ''}
                 </td>
               ))}
@@ -226,10 +226,10 @@ export function ShareBar({ value }) {
 
 export function SegTabs({ value, onChange, items, size = 'sm' }) {
   return (
-    <div className={cx('flex max-w-full overflow-x-auto rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-800', size === 'sm' ? 'text-xs' : 'text-[13px]')}>
+    <div className={cx('flex w-fit max-w-full overflow-x-auto rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-800', size === 'sm' ? 'text-xs' : 'text-[13px]')}>
       {items.map(([k, l]) => (
         <button key={k} onClick={() => onChange(k)}
-          className={cx('whitespace-nowrap rounded-md px-2.5 py-1 font-medium cursor-pointer', value === k ? 'bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-white' : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300')}>
+          className={cx('whitespace-nowrap rounded-md px-2.5 py-1 font-medium cursor-pointer', value === k ? 'bg-white text-zinc-900 ring-1 ring-zinc-200 dark:bg-zinc-700 dark:text-white dark:ring-zinc-600' : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300')}>
           {l}
         </button>
       ))}

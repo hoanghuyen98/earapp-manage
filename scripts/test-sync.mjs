@@ -8,7 +8,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eam-test-'));
 const { db, getSettings, setSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, AuthError, BannedError, RateLimitError } = await import('../server/earnapp.js');
-const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, markStale } = await import('../server/sync.js');
+const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, markStale, getProgress } = await import('../server/sync.js');
 const { summary } = await import('../server/stats.js');
 const { formatAlerts } = await import('../server/alerts.js');
 const has = (list, type) => list.some(a => a.type === type);
@@ -99,11 +99,44 @@ alerts = await syncAccount(acc(), s());
 assert.ok(has(alerts, 'device_banned'), 'bị ban lại vẫn báo');
 
 // 5. Online nhưng không ra tiền -> idle
+// 5a. Cả acc không máy nào tăng tiền (EarnApp chưa cập nhật / acc kiếm quá ít): KHÔNG báo nhầm sau vài giờ
+setSettings({ idle_hours: 3 });
+db.prepare('UPDATE devices SET last_earn_at = ? WHERE account_id = 1').run(Date.now() - 5 * 3600e3);
 db.prepare('UPDATE devices SET last_earn_at = ?, first_seen_at = ? WHERE uuid = ?').run(Date.now() - 5 * 3600e3, Date.now() - 5 * 3600e3, 'n2');
 fake.statuses.n2 = [Date.now() - 5 * 3600e3, 5 * 3600e3];
 alerts = await syncAccount(acc(), s());
-assert.equal(devRow('n2').status, 'idle');
+assert.equal(devRow('n2').status, 'online', 'cả acc đứng yên 5h: chưa coi là không ra tiền');
+assert.ok(!has(alerts, 'device_idle'));
+// ...nhưng đứng yên quá 24h thì vẫn báo
+db.prepare('UPDATE devices SET last_earn_at = ? WHERE account_id = 1').run(Date.now() - 25 * 3600e3);
+db.prepare('UPDATE devices SET last_earn_at = ?, first_seen_at = ? WHERE uuid = ?').run(Date.now() - 25 * 3600e3, Date.now() - 25 * 3600e3, 'n2');
+fake.statuses.n2 = [Date.now() - 25 * 3600e3, 25 * 3600e3];
+alerts = await syncAccount(acc(), s());
+assert.equal(devRow('n2').status, 'idle', 'đứng yên quá 24h thì báo');
 assert.ok(has(alerts, 'device_idle'));
+// 5b. Máy khác cùng acc vẫn tăng tiền mà máy này 5h không tăng: báo ngay theo idle_hours
+fake.devices.push(dev('n3', { earned_total: 0.5 }));
+fake.statuses.n3 = [Date.now() - 6e5, 6e5];
+await syncAccount(acc(), s());
+db.prepare("UPDATE devices SET status = 'online', alerted = '' WHERE uuid = 'n2'").run();
+db.prepare('UPDATE devices SET last_earn_at = ?, first_seen_at = ? WHERE uuid = ?').run(Date.now() - 5 * 3600e3, Date.now() - 5 * 3600e3, 'n2');
+fake.statuses.n2 = [Date.now() - 5 * 3600e3, 5 * 3600e3];
+fake.devices[2] = dev('n3', { earned_total: 0.6 }); // n3 vừa tăng tiền
+alerts = await syncAccount(acc(), s());
+assert.equal(devRow('n2').status, 'idle', 'máy khác vẫn ra tiền: báo sau idle_hours');
+assert.ok(has(alerts, 'device_idle'));
+assert.equal(devRow('n3').status, 'online');
+// 5c. Máy đang báo "không ra tiền" chuyển về online mà CHƯA tăng tiền (VD đổi ngưỡng): không báo "chạy lại"
+setSettings({ idle_hours: 12 });
+alerts = await syncAccount(acc(), s());
+assert.ok(!has(alerts, 'device_online'), 'chưa tăng tiền thì không báo chạy lại');
+assert.equal(devRow('n2').alerted, 'idle', 'vẫn nhớ đã báo, không báo lặp khi idle lại');
+// ...tăng tiền thật thì báo chạy lại
+fake.devices[1] = dev('n2', { earned_total: (devRow('n2').earned_total || 0) + 0.01 });
+alerts = await syncAccount(acc(), s());
+assert.ok(has(alerts, 'device_online'), 'ra tiền lại thì báo');
+setSettings({ idle_hours: 3 });
+fake.devices.pop(); delete fake.statuses.n3;
 
 // 6. Cookie hết hạn: báo 1 lần
 fake = new AuthError('auth required');
@@ -135,7 +168,7 @@ fake = okB({ money: { balance: 0, earnings_total: 0 }, devices: [], statuses: {}
 alerts = await syncAccount(accB(), s());
 console.log(alerts);
 assert.ok(has(alerts, 'account_suspect'), 'báo nghi bị khoá');
-assert.ok(accB().suspect_reason.includes('máy biến mất'));
+assert.ok(accB().suspect_reason.includes('node biến mất'));
 assert.equal(accB().balance, 4, 'giữ số dư cũ khi đang nghi');
 assert.equal((await syncAccount(accB(), s())).length, 0, 'không báo lặp');
 assert.equal(accB().balance, 4);
@@ -219,6 +252,33 @@ assert.equal(pickDue(now).id, 1, 'bỏ qua acc đang bị giới hạn');
 db.prepare('UPDATE accounts SET next_sync_at = ? WHERE id = 1').run(now + 60e3);
 assert.equal(pickDue(now), null, 'chưa tới giờ thì không lấy');
 
+// 16b. Vừa thêm acc (chưa có giờ hẹn) + đồng bộ ngay: lịch tự động không lấy trùng
+db.prepare('UPDATE accounts SET next_sync_at = NULL, backoff_until = NULL WHERE id = 2').run();
+assert.equal(pickDue()?.id, 2, 'acc mới tới lượt ngay');
+fake = okB({ money: { balance: 0.5, earnings_total: 20 } });
+const syncing = runCycle([2]);
+assert.equal(pickDue(), null, 'đang đồng bộ riêng thì lịch tự động bỏ qua');
+const steps = [];
+EarnAppClient.prototype.fetchAll = async ({ onStep }) => {
+  if (fake instanceof Error) throw fake;
+  for (const [f, l] of [[0, 'a'], [0.5, 'b'], [1, 'c']]) { onStep(f, l); steps.push(getProgress([2])[0].percent); }
+  return structuredClone(fake);
+};
+assert.equal(getProgress([2])[0].state, 'queued', 'vừa thêm: đang chờ tới lượt');
+assert.ok(getProgress([2])[0].eta_sec > 0, 'có ước tính thời gian');
+await syncing;
+assert.deepEqual(steps, [0, 48, 95], 'phần trăm tăng dần theo từng bước, chừa 5% cho bước lưu');
+assert.equal(getProgress([2])[0].state, 'done', 'xong thì báo đã tải xong');
+assert.equal(getProgress([2])[0].percent, 100);
+fake = new Error('proxy chết');
+await runCycle([2]);
+assert.equal(getProgress([2])[0].state, 'error', 'lỗi thì báo lỗi');
+assert.match(getProgress([2])[0].error, /proxy chết/);
+EarnAppClient.prototype.fetchAll = async () => { if (fake instanceof Error) throw fake; return structuredClone(fake); };
+fake = okB({ money: { balance: 0.5, earnings_total: 20 } });
+await runCycle([2]);
+assert.ok(accB().next_sync_at > Date.now() + 4 * 60e3, 'xong thì hẹn lần tới bình thường');
+
 // 17. Khởi động lại sau khi tắt lâu: acc quá hạn được rải ra, không gọi dồn
 for (let i = 0; i < 20; i++) db.prepare("INSERT INTO accounts(email, cookie_enc, created_at, next_sync_at) VALUES (?, 'x', ?, ?)").run(`z${i}@t.com`, now, now - 3600e3);
 const n = spreadOverdue(now, s());
@@ -242,8 +302,7 @@ const sample = [
 ];
 const msg = formatAlerts(sample, { ...s(), usd_vnd: 26000 });
 console.log('----- Mẫu tin Telegram -----\n' + msg.replace(/<\/?b>/g, '') + '\n----------------------------');
-assert.ok(msg.includes('<b>a@gmail.com</b>') && msg.includes('<b>b@gmail.com</b>'), 'tên acc là email');
-assert.ok(!msg.includes('Acc VPS 1'), 'không dùng tên tự đặt');
+assert.ok(msg.includes('<b>Acc VPS 1 (a@gmail.com)</b>') && msg.includes('<b>b@gmail.com</b>'), 'có tên riêng thì kèm email, không có thì chỉ email');
 assert.equal(msg.split('👤').length - 1, 2, 'gom theo 2 tài khoản');
 assert.ok(msg.indexOf('bị BAN') < msg.indexOf('gỡ ban'), 'việc nghiêm trọng lên trước');
 assert.ok(msg.includes('IP chất lượng kém'), 'lý do ban bằng tiếng Việt');

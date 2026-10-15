@@ -10,7 +10,7 @@ export function addDays(date, n) {
 
 const round = n => Math.round((n || 0) * 1000) / 1000;
 
-/** Quá thời gian này không lấy được dữ liệu mới thì coi số liệu acc là cũ (máy -> "Chưa rõ") */
+/** Quá thời gian này không lấy được dữ liệu mới thì coi số liệu acc là cũ (node -> "Chưa rõ") */
 export const staleMs = (s = getSettings()) => Math.max(30, 3 * (Number(s.sync_max_min) || 10)) * 60e3;
 
 /** Byte -> chuỗi dễ đọc, hệ 1000 giống EarnApp */
@@ -144,12 +144,12 @@ export function profitByMonth(months = 6) {
   return result;
 }
 
-/** Xếp hạng máy theo thu nhập N ngày */
+/** Xếp hạng node theo thu nhập N ngày */
 export function deviceRanking(days = 7) {
   const s = getSettings();
   const from = addDays(localDate(Date.now(), s.timezone), -(days - 1));
   return db.prepare(`
-    SELECT d.uuid, d.title, d.status, d.country, a.id AS account_id, COALESCE(a.label, a.email) AS account,
+    SELECT d.uuid, d.title, d.status, d.country, a.id AS account_id, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account,
       COALESCE(SUM(dd.last_total - dd.first_total), 0) AS earned,
       COALESCE((SELECT SUM(bytes) FROM device_usage u WHERE u.uuid = d.uuid AND u.date >= ?), 0) AS bytes
     FROM devices d JOIN accounts a ON a.id = d.account_id
@@ -162,7 +162,7 @@ export function accountRanking(days = 7) {
   const s = getSettings();
   const from = addDays(localDate(Date.now(), s.timezone), -(days - 1));
   return db.prepare(`
-    SELECT a.id, COALESCE(a.label, a.email) AS account, a.status,
+    SELECT a.id, COALESCE(NULLIF(a.label, '') || ' · ' || a.email, a.email) AS account, a.status,
       COALESCE((SELECT SUM(last_total - first_total) FROM account_daily WHERE account_id = a.id AND date >= ?), 0) AS earned,
       (SELECT COUNT(*) FROM devices WHERE account_id = a.id AND missing = 0 AND status != 'banned') AS devices,
       COALESCE((SELECT SUM(bytes) FROM device_usage WHERE account_id = a.id AND date >= ?), 0) AS bytes

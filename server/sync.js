@@ -2,6 +2,7 @@ import { db, getSettings, setSettings, addEvent, tx } from './db.js';
 import { decrypt } from './crypto.js';
 import { EarnAppClient, AuthError, BannedError, RateLimitError } from './earnapp.js';
 import { sendTelegram } from './telegram.js';
+import { fullName } from './accname.js';
 import { formatAlerts } from './alerts.js';
 import { formatDailyReport } from './dailyReport.js';
 import { localDate, addDays, staleMs } from './stats.js';
@@ -9,9 +10,15 @@ import { config } from './config.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const money = n => '$' + (n || 0).toFixed(2);
-const accName = a => a.label || a.email || `Acc #${a.id}`;
+const accName = fullName;
 
 export const syncState = { running: false, current: null, lastCycleAt: null, nextCycleAt: null };
+
+// Tiến độ lấy dữ liệu từng acc, để giao diện hiện % khi vừa thêm acc / bấm đồng bộ.
+// Chỉ giữ trong bộ nhớ; acc xong rồi giữ thêm 10 phút.
+const progress = new Map();
+let avgSyncMs = 20e3; // thời gian lấy 1 acc trung bình, dùng ước tính lúc chờ tới lượt
+const setProgress = (id, p) => progress.set(id, { ...progress.get(id), ...p });
 
 /** Ghi số liệu theo ngày: first_total lấy từ last_total của ngày trước để không mất phần kiếm được qua đêm */
 function upsertDaily(table, keyCol, key, date, total) {
@@ -26,16 +33,22 @@ function upsertDaily(table, keyCol, key, date, total) {
   }
 }
 
-function deviceStatus(dev, s, now) {
+// Cả acc không node nào tăng tiền (EarnApp chưa cập nhật, hoặc acc kiếm quá ít nên vài giờ mới nhích $0.001):
+// chỉ coi 1 node là "lâu không tăng tiền" khi đứng yên lâu hơn hẳn, tránh báo nhầm hàng loạt
+const IDLE_FLAT_MIN_HOURS = 24;
+export const idleHours = (s, peerEarning) => peerEarning ? Number(s.idle_hours) : Math.max(IDLE_FLAT_MIN_HOURS, Number(s.idle_hours) * 4);
+
+/** peerEarning: có node KHÁC cùng acc vừa tăng tiền trong idle_hours giờ qua */
+function deviceStatus(dev, s, now, peerEarning) {
   if (dev.banned_reason) return 'banned';
   if (!dev.online) return 'offline';
-  // Online nhưng không tăng tiền quá idle_hours -> idle (vàng)
+  // Online nhưng không tăng tiền quá lâu -> idle (vàng)
   const ref = Math.max(dev.last_earn_at || 0, dev.online_since || now, dev.first_seen_at || now);
-  return now - ref > s.idle_hours * 3600e3 ? 'idle' : 'online';
+  return now - ref > idleHours(s, peerEarning) * 3600e3 ? 'idle' : 'online';
 }
 
 /** Đồng bộ 1 tài khoản. Trả về danh sách dòng cảnh báo cho Telegram. */
-export async function syncAccount(acc, s = getSettings()) {
+export async function syncAccount(acc, s = getSettings(), { onStep } = {}) {
   const alerts = [];
   const now = Date.now();
   const firstSync = !acc.last_sync_at;
@@ -46,7 +59,7 @@ export async function syncAccount(acc, s = getSettings()) {
   let data;
   try {
     // Số liệu tháng ít thay đổi: chỉ lấy mỗi giờ 1 lần để đỡ gọi EarnApp
-    data = await client.fetchAll({ withMonthly: !acc.usage_monthly_at || now - acc.usage_monthly_at > 3600e3 });
+    data = await client.fetchAll({ withMonthly: !acc.usage_monthly_at || now - acc.usage_monthly_at > 3600e3, onStep });
   } catch (e) {
     if (e instanceof AuthError) {
       db.prepare("UPDATE accounts SET auth_state = 'expired', last_error = ?, last_sync_at = ? WHERE id = ?").run('Cookie hết hạn hoặc đã đăng xuất', now, acc.id);
@@ -88,7 +101,7 @@ export async function syncAccount(acc, s = getSettings()) {
   const { user, money: m, devices, transactions, usage, usageMonthly } = data;
   let { statuses } = data;
 
-  // Trạng thái máy rỗng trong khi lần trước còn máy online: có thể EarnApp lỗi thoáng qua.
+  // Trạng thái node rỗng trong khi lần trước còn node online: có thể EarnApp lỗi thoáng qua.
   // Lần đầu gặp thì giữ trạng thái cũ, chỉ tin "tất cả rớt" khi 2 lần liên tiếp đều rỗng.
   let emptyStreak = 0;
   if (devices.length && !Object.keys(statuses).length) {
@@ -96,7 +109,7 @@ export async function syncAccount(acc, s = getSettings()) {
     const prevOnline = db.prepare("SELECT uuid, online_since FROM devices WHERE account_id = ? AND missing = 0 AND online = 1").all(acc.id);
     if (prevOnline.length && emptyStreak < 2) {
       statuses = Object.fromEntries(prevOnline.map(d => [d.uuid, [d.online_since, 0]]));
-      console.warn(`${accName(acc)}: EarnApp trả trạng thái máy rỗng, tạm giữ trạng thái cũ`);
+      console.warn(`${accName(acc)}: EarnApp trả trạng thái node rỗng, tạm giữ trạng thái cũ`);
     }
   }
   db.prepare('UPDATE accounts SET empty_status_streak = ? WHERE id = ?').run(emptyStreak, acc.id);
@@ -110,7 +123,7 @@ export async function syncAccount(acc, s = getSettings()) {
     const prevDevices = db.prepare('SELECT COUNT(*) AS n FROM devices WHERE account_id = ? AND missing = 0').get(acc.id).n;
     const knownTx = new Set(db.prepare('SELECT uuid FROM transactions WHERE account_id = ?').all(acc.id).map(r => r.uuid));
     const newPayout = (transactions || []).some(t => !knownTx.has(t.uuid));
-    if (prevDevices > 0 && devices.length === 0) reasons.push(`tất cả ${prevDevices} máy biến mất`);
+    if (prevDevices > 0 && devices.length === 0) reasons.push(`tất cả ${prevDevices} node biến mất`);
     if (total < acc.earnings_total - 0.01) reasons.push(`tổng kiếm giảm từ ${money(acc.earnings_total)} xuống ${money(total)}`);
     else if (balance < acc.balance - 0.01 && !newPayout) reasons.push(`số dư giảm từ ${money(acc.balance)} xuống ${money(balance)} mà không có lệnh rút`);
   }
@@ -159,9 +172,12 @@ export async function syncAccount(acc, s = getSettings()) {
       db.prepare('INSERT OR REPLACE INTO balance_snapshots(account_id, ts, balance, earnings_total) VALUES (?, ?, ?, ?)').run(acc.id, now, balance, total);
     }
 
-    // --- Máy (node) ---
+    // --- Node (thiết bị EarnApp trong acc, mỗi node thường chạy 1 proxy) ---
     const existing = Object.fromEntries(db.prepare('SELECT * FROM devices WHERE account_id = ?').all(acc.id).map(d => [d.uuid, d]));
     const seen = new Set();
+    // Lần tăng tiền gần nhất của từng node, để biết các node khác trong acc có đang ra tiền không
+    const lastEarnOf = d => { const old = existing[d.uuid]; return !old ? null : d.earned_total > old.earned_total ? now : old.last_earn_at; };
+    const recentEarners = new Set(devices.filter(d => (lastEarnOf(d) || 0) > now - s.idle_hours * 3600e3).map(d => d.uuid));
     for (const d of devices) {
       seen.add(d.uuid);
       const old = existing[d.uuid];
@@ -174,33 +190,37 @@ export async function syncAccount(acc, s = getSettings()) {
         online: st ? 1 : 0, online_since: st ? st[0] : null,
         last_online_at: st ? now : old?.last_online_at || null,
         first_seen_at: old?.first_seen_at || now,
-        last_earn_at: !old ? null : d.earned_total > old.earned_total ? now : old.last_earn_at,
+        last_earn_at: lastEarnOf(d),
       };
-      dev.status = deviceStatus(dev, s, now);
+      const peerEarning = recentEarners.size > (recentEarners.has(d.uuid) ? 1 : 0);
+      dev.status = deviceStatus(dev, s, now, peerEarning);
       dev.status_changed_at = old?.status === dev.status ? old.status_changed_at : now;
       let alerted = old?.alerted || '';
 
       if (!firstSync && old) {
         if (alerted === 'banned' && dev.status !== 'banned') {
           // EarnApp gỡ ban: ghi lại và reset để lần bị ban sau vẫn được báo
-          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_unbanned', level: 'good', message: `Máy ${dev.title} hết bị ban` });
+          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_unbanned', level: 'good', message: `Node ${dev.title} hết bị ban` });
           if (s.notify_device_banned) alerts.push(A('device_unbanned', { device: dev.title }));
           alerted = '';
         }
         if (dev.status === 'banned' && alerted !== 'banned') {
-          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_banned', level: 'critical', message: `Máy ${dev.title} bị ban (${dev.banned_reason})` });
+          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_banned', level: 'critical', message: `Node ${dev.title} bị ban (${dev.banned_reason})` });
           if (s.notify_device_banned) alerts.push(A('device_banned', { device: dev.title, reason: dev.banned_reason }));
           alerted = 'banned';
         } else if (dev.status === 'offline' && dev.last_online_at && now - dev.last_online_at > s.offline_grace_min * 60e3 && alerted !== 'offline') {
-          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_offline', level: 'warning', message: `Máy ${dev.title} rớt mạng` });
+          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_offline', level: 'warning', message: `Node ${dev.title} rớt mạng` });
           if (s.notify_offline) alerts.push(A('device_offline', { device: dev.title, last_seen: dev.last_online_at }));
           alerted = 'offline';
         } else if (dev.status === 'idle' && alerted !== 'idle') {
-          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_idle', level: 'warning', message: `Máy ${dev.title} online nhưng ${s.idle_hours}h không ra tiền` });
-          if (s.notify_idle) alerts.push(A('device_idle', { device: dev.title }));
+          const hours = idleHours(s, peerEarning);
+          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_idle', level: 'warning', message: `Node ${dev.title} online nhưng ${hours}h không tăng tiền` });
+          if (s.notify_idle) alerts.push(A('device_idle', { device: dev.title, hours }));
           alerted = 'idle';
+        } else if (dev.status === 'online' && alerted === 'idle' && dev.last_earn_at === old.last_earn_at) {
+          // Hết "lâu không tăng tiền" chỉ vì đổi ngưỡng / node vừa kết nối lại, chưa tăng đồng nào: chưa báo "chạy lại"
         } else if (dev.status === 'online' && alerted && alerted !== 'banned') {
-          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_online', level: 'good', message: `Máy ${dev.title} hoạt động lại` });
+          addEvent({ account_id: acc.id, device_uuid: d.uuid, type: 'device_online', level: 'good', message: `Node ${dev.title} hoạt động lại` });
           if (s.notify_online) alerts.push(A('device_online', { device: dev.title }));
           alerted = '';
         }
@@ -220,7 +240,7 @@ export async function syncAccount(acc, s = getSettings()) {
           status_changed_at = excluded.status_changed_at, alerted = excluded.alerted, missing = 0, updated_at = excluded.updated_at`)
         .run({ ...dev, account_id: acc.id, updated_at: now });
       upsertDaily('device_daily', 'uuid', d.uuid, today, dev.earned_total);
-      // Uptime: đếm số lần kiểm tra và số lần thấy online trong ngày (máy bị ban không tính)
+      // Uptime: đếm số lần kiểm tra và số lần thấy online trong ngày (node bị ban không tính)
       if (dev.status !== 'banned') {
         db.prepare('UPDATE device_daily SET check_n = check_n + 1, online_n = online_n + ? WHERE uuid = ? AND date = ?').run(dev.online, d.uuid, today);
       }
@@ -261,7 +281,11 @@ export async function syncAccount(acc, s = getSettings()) {
       if (firstSync) continue;
       if (!old) {
         addEvent({ account_id: acc.id, type: 'payout_new', level: 'info', message: `${accName(acc)}: lệnh rút mới ${money(t.money_amount)} (${t.status})` });
-        if (s.notify_payout) alerts.push(A('payout_new', { amount: t.money_amount, method: t.payment_method }));
+        // Lệnh do web vừa tạo (Rút ngay / theo lịch) đã có tin "Đã gửi lệnh rút": không báo lại.
+        // Lệnh tạo ngoài web (trên EarnApp, Auto-redeem) vẫn báo để phòng lộ cookie.
+        const fromWeb = db.prepare("SELECT 1 FROM withdraw_log WHERE account_id = ? AND status = 'ok' AND ts > ? AND ABS(amount - ?) < 0.02")
+          .get(acc.id, now - 6 * 3600e3, t.money_amount || 0);
+        if (s.notify_payout && !fromWeb) alerts.push(A('payout_new', { amount: t.money_amount, method: t.payment_method }));
       }
       if (t.status === 'paid' && old?.status !== 'paid') {
         addEvent({ account_id: acc.id, type: 'payout_paid', level: 'good', message: `${accName(acc)}: đã nhận ${money(t.money_amount)}` });
@@ -275,7 +299,7 @@ export async function syncAccount(acc, s = getSettings()) {
       const status = active > 0 ? 'running' : 'stopped';
       if (status !== acc.status) {
         db.prepare('UPDATE accounts SET status = ? WHERE id = ?').run(status, acc.id);
-        if (!firstSync) addEvent({ account_id: acc.id, type: 'account_status', level: status === 'running' ? 'good' : 'warning', message: `${accName(acc)}: ${status === 'running' ? 'đang chạy' : 'đã dừng (không còn máy online)'}` });
+        if (!firstSync) addEvent({ account_id: acc.id, type: 'account_status', level: status === 'running' ? 'good' : 'warning', message: `${accName(acc)}: ${status === 'running' ? 'đang chạy' : 'đã dừng (không còn node online)'}` });
       }
     }
   });
@@ -333,12 +357,16 @@ export async function flushAlerts(s) {
 /** Đồng bộ 1 acc rồi hẹn lần tới */
 async function syncOne(id, s) {
   const acc = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
-  if (!acc) return [];
+  if (!acc) { progress.delete(id); return []; }
   syncState.running = true;
   syncState.current = acc.id;
+  const started = Date.now();
+  setProgress(id, { state: 'running', percent: 0, step: 'Đang kết nối EarnApp', started_at: started });
+  // Lấy dữ liệu chiếm 0–95%, phần còn lại là lưu vào database
+  const onStep = (frac, step) => setProgress(id, { percent: Math.round(frac * 95), step });
   let next = Date.now() + nextDelayMs(s);
   try {
-    const r = await syncAccount(acc, s);
+    const r = await syncAccount(acc, s, { onStep });
     alertQueue.push(...r);
     if (r.rateLimited) {
       const until = db.prepare('SELECT backoff_until FROM accounts WHERE id = ?').get(acc.id).backoff_until || next;
@@ -352,6 +380,12 @@ async function syncOne(id, s) {
     return [];
   } finally {
     db.prepare('UPDATE accounts SET next_sync_at = ? WHERE id = ?').run(Math.round(next), acc.id);
+    const after = db.prepare('SELECT last_ok_at, last_error FROM accounts WHERE id = ?').get(acc.id);
+    const ok = (after?.last_ok_at || 0) >= started;
+    if (ok) avgSyncMs = avgSyncMs * 0.7 + (Date.now() - started) * 0.3;
+    setProgress(id, ok
+      ? { state: 'done', percent: 100, step: 'Đã tải xong', finished_at: Date.now() }
+      : { state: 'error', step: 'Lấy dữ liệu lỗi', error: after?.last_error || 'Không rõ lỗi', finished_at: Date.now() });
     const t = new Date().toLocaleTimeString('vi-VN', { timeZone: s.timezone });
     console.log(`[${t}] ${accName(acc)}: đã lấy dữ liệu, lần tới sau ${((next - Date.now()) / 60e3).toFixed(1)} phút`);
     syncState.running = false;
@@ -366,6 +400,9 @@ export function pickDue(now = Date.now()) {
     ORDER BY COALESCE(next_sync_at, 0), id`).all(now, now);
   return list.find(a => a.proxy || directPauseUntil <= now) || null;
 }
+
+const stillDue = id => !!db.prepare(`SELECT 1 FROM accounts WHERE id = ? AND paused = 0
+  AND (next_sync_at IS NULL OR next_sync_at <= ?) AND (backoff_until IS NULL OR backoff_until <= ?)`).get(id, Date.now(), Date.now());
 
 /** Khi khởi động: các acc quá hạn (server tắt một lúc) được rải ngẫu nhiên, không gọi dồn */
 export function spreadOverdue(now = Date.now(), s = getSettings()) {
@@ -389,6 +426,15 @@ export async function runCycle(ids = null) {
   const s = getSettings();
   const list = ids || db.prepare(`SELECT id FROM accounts WHERE paused = 0 AND (backoff_until IS NULL OR backoff_until <= ?) ORDER BY id`)
     .all(Date.now()).map(a => a.id);
+  // Gọi riêng (thêm acc, bấm đồng bộ…): giữ chỗ trước để lịch tự động không lấy trùng acc này.
+  // syncOne sẽ ghi lại giờ hẹn thật khi xong.
+  if (ids) {
+    const hold = db.prepare('UPDATE accounts SET next_sync_at = ? WHERE id = ?');
+    for (const id of ids) {
+      hold.run(Date.now() + nextDelayMs(s), id);
+      progress.set(id, { state: 'queued', percent: 0, step: 'Đang chờ tới lượt', queued_at: Date.now() });
+    }
+  }
   for (const [i, id] of list.entries()) {
     const acc = db.prepare('SELECT proxy FROM accounts WHERE id = ?').get(id);
     if (!ids && acc && !acc.proxy && directPauseUntil > Date.now()) continue;
@@ -399,7 +445,7 @@ export async function runCycle(ids = null) {
   return true;
 }
 
-/** Acc lâu không lấy được dữ liệu mới: máy chuyển sang "Chưa rõ" thay vì giữ màu xanh cũ.
+/** Acc lâu không lấy được dữ liệu mới: node chuyển sang "Chưa rõ" thay vì giữ màu xanh cũ.
  *  Lần lấy dữ liệu thành công kế tiếp sẽ tính lại trạng thái thật. */
 export function markStale(now = Date.now(), s = getSettings()) {
   return db.prepare(`UPDATE devices SET status = 'unknown', online = 0, status_changed_at = ?
@@ -427,8 +473,9 @@ export function startScheduler() {
     try {
       const due = pickDue();
       if (due) {
-        await withLock(() => syncOne(due.id, s));
-        wait = s.account_delay_sec * 1000 * rand(0.7, 1.3);
+        // Xét lại sau khi có khoá: lúc chờ, acc có thể vừa được runCycle lấy xong
+        const ran = await withLock(() => stillDue(due.id) && syncOne(due.id, s).then(() => true));
+        wait = ran ? s.account_delay_sec * 1000 * rand(0.7, 1.3) : 500;
       } else {
         const n = db.prepare('SELECT MIN(next_sync_at) AS t FROM accounts WHERE paused = 0').get().t;
         syncState.nextCycleAt = n;
@@ -449,4 +496,32 @@ export function startScheduler() {
     dailyReport(s).catch(e => console.error('daily report', e.message));
     cleanup(s);
   }, 60e3);
+}
+
+/** Tiến độ các acc cho giao diện: %, việc đang làm, ước tính còn bao lâu (giây) */
+export function getProgress(ids, now = Date.now(), s = getSettings()) {
+  for (const [id, p] of progress) if (p.finished_at && now - p.finished_at > 10 * 60e3) progress.delete(id);
+  const delay = (Number(s.account_delay_sec) || 0) * 1000;
+  const running = [...progress.values()].find(p => p.state === 'running');
+  const runLeft = running ? Math.max(avgSyncMs - (now - running.started_at), 2000) : 0;
+  const queue = [...progress.entries()].filter(([, p]) => p.state === 'queued').sort((a, b) => a[1].queued_at - b[1].queued_at).map(([id]) => id);
+  const accs = db.prepare(`SELECT id, last_sync_at, last_ok_at, last_error, balance,
+    (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0) AS devices FROM accounts a WHERE id IN (${ids.map(() => '?').join(',') || 'NULL'})`).all(...ids);
+  return accs.map(a => {
+    // Không có trong bộ nhớ (vd. web vừa khởi động lại): suy ra từ database
+    const p = progress.get(a.id) || (a.last_ok_at ? { state: 'done', percent: 100, step: 'Đã tải xong' }
+      : a.last_sync_at ? { state: 'error', step: 'Lấy dữ liệu lỗi', error: a.last_error }
+      : { state: 'queued', percent: 0, step: 'Đang chờ tới lượt' });
+    let eta = null;
+    if (p.state === 'running') {
+      const spent = now - p.started_at;
+      // Đủ dữ liệu thì ước theo tốc độ thật của acc này, chưa đủ thì theo trung bình
+      eta = p.percent >= 15 ? spent * (100 - p.percent) / p.percent : Math.max(avgSyncMs - spent, 2000);
+    } else if (p.state === 'queued') {
+      const pos = queue.indexOf(a.id);
+      eta = runLeft + delay + Math.max(pos, 0) * (avgSyncMs + delay) + avgSyncMs;
+      p.ahead = Math.max(pos, 0) + (running ? 1 : 0);
+    }
+    return { id: a.id, ...p, eta_sec: eta == null ? null : Math.round(eta / 1000), devices: a.devices, balance: a.balance };
+  });
 }
