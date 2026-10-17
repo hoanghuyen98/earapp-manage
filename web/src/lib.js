@@ -19,6 +19,29 @@ export async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+/** Gửi file lên (thân request là nội dung file), trả về JSON */
+export async function uploadFile(path, file, headers = {}) {
+  const res = await fetch('/api' + path, { method: 'POST', body: file, headers: { 'content-type': 'application/octet-stream', ...headers }, credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) window.dispatchEvent(new Event('auth:logout'));
+  if (!res.ok) throw new ApiError(data.error || `Lỗi ${res.status}`, res.status);
+  return data;
+}
+
+/** POST rồi tải file trả về xuống máy (tên file theo server) */
+export async function downloadPost(path, body) {
+  const res = await fetch('/api' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(data.error || `Lỗi ${res.status}`, res.status);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '')?.[1] || 'download';
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 export const usd = (n, digits = 2) =>
   '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 

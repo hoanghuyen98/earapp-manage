@@ -9,6 +9,7 @@ import { DeviceTable } from './Devices';
 import { TxTable } from './Payouts';
 import { EventList, StatStrip } from './Dashboard';
 import { CookieGuide, AccountState, ProxyField } from './Accounts';
+import { MachineSelect } from './Machines';
 
 function EditModal({ acc, open, onClose, onSaved }) {
   const toast = useToast();
@@ -30,7 +31,7 @@ function EditModal({ acc, open, onClose, onSaved }) {
       <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Tên riêng"><Input value={form.label} maxLength={40} onChange={e => setForm({ ...form, label: e.target.value })} placeholder="VD: A1" /></Field>
-          <Field label="Máy"><Input value={form.group_name} onChange={e => setForm({ ...form, group_name: e.target.value })} placeholder="VD: VPS-01" /></Field>
+          <Field label="Máy" hint="Chuyển acc sang máy khác"><MachineSelect allowNone value={form.group_name} onChange={v => setForm({ ...form, group_name: v })} /></Field>
         </div>
         <Field label="Ghi chú"><Textarea rows={2} value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} /></Field>
         <ProxyField value={form.proxy} onChange={v => setForm({ ...form, proxy: v })} />

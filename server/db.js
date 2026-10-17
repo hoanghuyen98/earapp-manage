@@ -205,6 +205,44 @@ db.exec(`UPDATE accounts SET last_ok_at = COALESCE((SELECT MAX(updated_at) FROM 
 addColumn('users', 'session_ver', 'INTEGER NOT NULL DEFAULT 0'); // tăng lên thì mọi phiên đăng nhập cũ hết hiệu lực                      // đã lưu trữ: ngừng theo dõi nhưng giữ số liệu
 
 
+// Máy: máy thật / VPS chạy nhiều acc. Acc trỏ tới máy qua accounts.group_name = machines.name
+// (đổi tên máy thì đổi luôn ở mọi acc, xem machines.js). '' = chưa gán máy.
+db.exec(`CREATE TABLE IF NOT EXISTS machines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+)`);
+// DB cũ: máy là ô chữ tự gõ trong acc -> tạo máy từ các tên đang dùng.
+// Bỏ khoảng trắng thừa; tên chỉ khác hoa/thường (kể cả chữ có dấu: "MÁY A" = "Máy A") gộp 1, lấy tên của acc thêm sớm nhất.
+{
+  const key = n => n.toLocaleLowerCase('vi');
+  const known = new Map(db.prepare('SELECT name FROM machines').all().map(r => [key(r.name), r.name]));
+  const accs = db.prepare("SELECT id, group_name FROM accounts WHERE group_name IS NOT NULL AND group_name != '' ORDER BY id").all();
+  const setGroup = db.prepare('UPDATE accounts SET group_name = ? WHERE id = ?');
+  const addMachine = db.prepare('INSERT INTO machines(name, created_at) VALUES (?, ?)');
+  for (const a of accs) {
+    const n = a.group_name.normalize('NFC').trim().replace(/\s+/g, ' ');
+    if (!n) { setGroup.run('', a.id); continue; }
+    if (!known.has(key(n))) { addMachine.run(n, Date.now()); known.set(key(n), n); }
+    if (known.get(key(n)) !== a.group_name) setGroup.run(known.get(key(n)), a.id);
+  }
+  db.exec("UPDATE accounts SET group_name = '' WHERE group_name IS NULL");
+}
+
+// Lượt thêm acc chạy ngầm (xem addJobs.js). rows_enc: các dòng cookie đã mã hoá, xong thì chỉ giữ dòng lỗi (để thử lại)
+db.exec(`CREATE TABLE IF NOT EXISTS add_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  group_name TEXT NOT NULL DEFAULT '',
+  total INTEGER NOT NULL,
+  rows_enc TEXT NOT NULL DEFAULT '',
+  results TEXT NOT NULL DEFAULT '[]',   -- kết quả từng dòng đã kiểm tra
+  seen INTEGER NOT NULL DEFAULT 0       -- admin đã đóng thông báo
+)`);
+addColumn('add_jobs', 'kind', "TEXT NOT NULL DEFAULT 'add'"); // add = thêm bằng cookie, import = nhập từ file danh sách acc
+
 // Bỏ chế độ chỉnh tay Running/Stopped (bản cũ): đưa về tự động theo node
 {
   const manual = db.prepare("SELECT id FROM accounts WHERE status_mode = 'manual' AND status != 'banned'").all();
@@ -217,7 +255,8 @@ addColumn('users', 'session_ver', 'INTEGER NOT NULL DEFAULT 0'); // tăng lên t
 const DEFAULT_SETTINGS = {
   sync_min_min: 5,             // mỗi acc lấy dữ liệu ngẫu nhiên từ 5...
   sync_max_min: 10,            // ...đến 10 phút/lần
-  account_delay_sec: 3,        // khoảng cách tối thiểu giữa 2 acc
+  account_delay_sec: 3,        // khoảng cách tối thiểu giữa 2 acc dùng cùng 1 proxy (hoặc cùng IP server)
+  max_parallel: 10,            // số acc lấy dữ liệu cùng lúc (acc khác proxy), 1–20
   idle_hours: 6,               // online mà không tăng tiền quá N giờ (trong khi node khác cùng acc vẫn ra tiền) -> vàng
   offline_grace_min: 10,       // offline quá N phút mới báo
   timezone: 'Asia/Ho_Chi_Minh',
@@ -235,6 +274,7 @@ const DEFAULT_SETTINGS = {
   notify_rate_limit: true,
   notify_sync_error: true,
   notify_withdraw: true,
+  notify_add_done: true,        // thêm acc chạy ngầm xong: 1 tin cho cả lượt
   notify_withdraw_skipped: false, // bỏ qua vì số dư chưa đủ mức rút tối thiểu: mặc định không báo (đỡ spam)
   error_alert_count: 3,        // lỗi lấy dữ liệu N lần liên tiếp thì báo
   daily_report: true,

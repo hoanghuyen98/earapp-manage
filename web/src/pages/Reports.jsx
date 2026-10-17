@@ -215,6 +215,13 @@ export default function Reports() {
         </div>
       </Card>
 
+      {/* Theo máy trước, bấm vào máy để lọc các acc của máy */}
+      {r.groups.length > 0 && (
+        <Section title="Theo máy">
+          <SortTable columns={groupCols} rows={r.groups} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={g => g.group !== 'Chưa gán máy' && scope.set({ group: g.group })} />
+        </Section>
+      )}
+
       {/* Theo tài khoản */}
       <Section title="Theo tài khoản">
         <SortTable columns={accCols} rows={[...r.accounts].sort(byAccount)} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={a => navigate(`/accounts/${a.id}`)}
@@ -226,12 +233,6 @@ export default function Reports() {
             uptime: <Uptime value={s.uptime} />, payouts: usd(accTotals.payouts), balance: usd(accTotals.balance),
           } : null} />
       </Section>
-
-      {r.groups.length > 0 && (
-        <Section title="Theo máy">
-          <SortTable columns={groupCols} rows={r.groups} initialSort={{ key: 'earned', dir: 'desc' }} onRowClick={g => g.group !== 'Chưa gán máy' && scope.set({ group: g.group })} />
-        </Section>
-      )}
 
       {/* Theo tháng + lãi lỗ */}
       <div className="grid gap-4 lg:grid-cols-5">

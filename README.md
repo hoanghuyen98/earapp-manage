@@ -29,7 +29,10 @@ Web theo dõi nhiều tài khoản EarnApp: trạng thái máy theo thời gian 
 - **Xuất Excel (CSV)** cho tài khoản, máy và lịch sử rút.
 - **Bảo mật:** web có mật khẩu đăng nhập, cookie EarnApp được mã hoá AES-256 khi lưu.
   - Đổi mật khẩu thì các thiết bị khác tự bị đăng xuất. Có nút **Đăng xuất các thiết bị khác** trong Cài đặt.
-- **Sao lưu:** Cài đặt → **Tải file sao lưu**: 1 file zip gồm database, khoá giải mã cookie và hướng dẫn khôi phục. Giữ file này kín vì nó truy cập được các acc.
+- **Sao lưu & chuyển VPS** (trang Sao lưu trên menu; điện thoại: nút ở đầu trang):
+  - **Tải file sao lưu / Chọn file sao lưu (.zip):** toàn bộ dữ liệu, gồm cả danh sách acc (acc, lịch sử, báo cáo, lịch rút, cài đặt, mật khẩu đăng nhập). Đổi VPS: cài web mới, vào trang Sao lưu, bấm Chọn file sao lưu. Web kiểm tra file, hiện tóm tắt, đồng ý thì tự khởi động lại; dữ liệu cũ của web mới được cất ở `data/truoc-khoi-phuc-<giờ>/`.
+  - **Nâng cao: Tải file acc / Nhập file acc (.json):** chỉ máy, acc, cookie, proxy, file khoá bằng mật khẩu riêng. Nhập vào web khác (gộp, không xoá gì), acc vào ngay không phải kiểm tra lại từng cookie, tải dữ liệu chạy ngầm.
+  - Các file này chứa cookie các acc, giữ kín.
 - **Telegram lỗi không mất cảnh báo:** gửi không được thì web giữ lại và gửi lại ở phút sau, kèm ghi chú gửi trễ.
 
 ## Chạy trên máy (Windows / Linux)
@@ -38,7 +41,7 @@ Cần Node.js 22.13 trở lên.
 
 ```bash
 npm run setup        # cài thư viện + build giao diện (chỉ chạy lần đầu)
-npm start            # mở http://localhost:3000
+npm start            # mở http://localhost:6688
 ```
 
 Đăng nhập lần đầu: `admin` / `admin123`, hoặc theo `ADMIN_USER` / `ADMIN_PASSWORD` trong `.env`. Vào **Cài đặt** đổi mật khẩu ngay sau khi đăng nhập.
@@ -51,7 +54,7 @@ docker compose up -d --build
 ```
 
 - Dữ liệu nằm trong thư mục `data/`. Chỉ cần sao lưu thư mục này, gồm database và khoá mã hoá.
-- Nên đặt web sau Nginx/Caddy có HTTPS. Ví dụ Caddy: `quanly.tenmien.com { reverse_proxy localhost:3000 }`.
+- Nên đặt web sau Nginx/Caddy có HTTPS. Ví dụ Caddy: `quanly.tenmien.com { reverse_proxy localhost:6688 }`.
 
 ## Cách lấy cookie EarnApp
 
@@ -64,7 +67,7 @@ docker compose up -d --build
 
 ## Ghi chú kỹ thuật
 
-- Web dùng API nội bộ của dashboard EarnApp (không chính thức). Chỉ cần cookie `oauth-refresh-token`.
+- Web dùng API nội bộ của dashboard EarnApp (không chính thức). Cookie dán vào được dùng nguyên văn, không lọc bỏ phần nào (có acc EarnApp cần cả `brd_sess_id`); bắt buộc có `oauth-refresh-token`.
 - Mỗi acc có lịch riêng: lấy dữ liệu xong thì hẹn lần tới **ngẫu nhiên 5–10 phút** (chỉnh trong Cài đặt). Mỗi lúc chỉ gọi 1 acc, 2 acc cách nhau ít nhất vài giây, nên các acc được rải đều theo thời gian. Có thể đặt proxy riêng cho từng acc: hỗ trợ `http://`, `https://`, `socks5://`, hoặc dán dạng `host:port:user:pass`. Với SOCKS5 cần ghi rõ `socks5://` ở đầu.
 - Thu nhập theo ngày được tính từ chênh lệch `earnings_total` giữa các lần đồng bộ, nên chỉ có số liệu **từ ngày bắt đầu theo dõi**.
 - Trạng thái máy:

@@ -174,7 +174,7 @@ export async function runWithdraw(accountId, { manual = false, target = null, ip
   running.add(accountId);
   setStep(accountId, { state: 'queued', step: 'Đang chờ lượt', since: Date.now(), manual: manual || !!target });
   try {
-    return await withLock(() => runLocked(accountId, manual || !!target, target, ip));
+    return await withLock(() => runLocked(accountId, manual || !!target, target, ip), accountId);
   } finally {
     running.delete(accountId);
     progress.delete(accountId);

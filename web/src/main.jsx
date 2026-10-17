@@ -13,6 +13,7 @@ import Devices from './pages/Devices';
 import Payouts from './pages/Payouts';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
+import Backup from './pages/Backup';
 
 function App() {
   const [user, setUser] = useState(undefined);
@@ -31,11 +32,13 @@ function App() {
     <Routes>
       <Route element={<Layout user={user} onLogout={() => setUser(null)} />}>
         <Route index element={<Dashboard />} />
+        <Route path="machines" element={<Navigate to="/accounts" replace />} />
         <Route path="accounts" element={<Accounts />} />
         <Route path="accounts/:id" element={<AccountDetail />} />
         <Route path="devices" element={<Devices />} />
         <Route path="payouts" element={<Payouts />} />
         <Route path="reports" element={<Reports />} />
+        <Route path="backup" element={<Backup />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

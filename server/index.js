@@ -1,18 +1,19 @@
 import express from 'express';
-import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { config, ROOT, DATA_DIR } from './config.js';
-import { zip } from './zip.js';
+import { config, ROOT } from './config.js';
 import { db, getSettings, setSettings, addEvent } from './db.js';
 import { encrypt, verifyPassword, hashPassword, signSession, verifySession } from './crypto.js';
 import { normalizeCookie, normalizeProxy, EarnAppClient } from './earnapp.js';
-import { runCycle, startScheduler, syncState, requestSyncAll, getProgress } from './sync.js';
+import { runCycle, startScheduler, syncState, requestSyncAll, getProgress, PARALLEL_LIMIT } from './sync.js';
 import { staleMs, summary, dailySeries, profitByMonth, deviceRanking, accountRanking, usageSeries, usageToday, usageMonthly } from './stats.js';
 import { sendTelegramEach, chatIds, validChatId } from './telegram.js';
 import { byAccount, cmp, fullName, proxyInfo } from './accname.js';
 import { methodName } from './alerts.js';
 import { overview, report, scopeOptions } from './reports.js';
+import { startAddJob, listJobs, dismissJob, retryJob, resumeJobs } from './addJobs.js';
+import { BackupError, makeBackup, checkRestore, applyRestore, cancelRestore, exportAccounts, importAccounts } from './backup.js';
+import { MachineError, resolveMachine, listMachines, createMachine, updateMachine, deleteMachine, moveAccounts } from './machines.js';
 import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, validateTarget, notifyChange, recomputeSchedules, startWithdrawScheduler, withdrawProgress } from './withdraw.js';
 
 const app = express();
@@ -142,39 +143,36 @@ app.get('/api/accounts/:id', (req, res) => {
   });
 });
 
-/** Thêm 1 hoặc nhiều acc: mỗi dòng 1 cookie */
-app.post('/api/accounts', async (req, res) => {
-  const { cookies, note = '', group_name = '' } = req.body || {};
-  const label = String(req.body?.label || '').trim().slice(0, 40);
-  let proxy;
-  try { proxy = normalizeProxy(req.body?.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
-  const lines = String(cookies || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return res.status(400).json({ error: 'Chưa nhập cookie' });
-  const results = [];
-  for (const line of lines) {
-    try {
-      const cookie = normalizeCookie(line);
-      const user = await new EarnAppClient(cookie, proxy).call('user_data');
-      const dup = db.prepare('SELECT id FROM accounts WHERE email = ?').get(user.email);
-      if (dup) {
-        db.prepare("UPDATE accounts SET cookie_enc = ?, auth_state = 'pending', archived_at = NULL, paused = 0 WHERE id = ?").run(encrypt(cookie), dup.id);
-        if (lines.length === 1 && label) db.prepare('UPDATE accounts SET label = ? WHERE id = ?').run(label, dup.id);
-        results.push({ ok: true, email: user.email, updated: true, id: dup.id });
-        continue;
-      }
-      // Tên riêng chỉ áp dụng khi thêm 1 acc (thêm nhiều acc cùng lúc thì để trống, đặt sau)
-      const r = db.prepare('INSERT INTO accounts(email, label, note, group_name, cookie_enc, proxy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(user.email, lines.length === 1 && label ? label : null, note, group_name, encrypt(cookie), proxy, Date.now());
-      addEvent({ account_id: Number(r.lastInsertRowid), type: 'account_added', message: `Đã thêm acc ${user.email}` });
-      results.push({ ok: true, email: user.email, id: Number(r.lastInsertRowid) });
-    } catch (e) {
-      results.push({ ok: false, error: e.message, line: line.slice(0, 20) + '…' });
-    }
+// ---------- Máy ----------
+const machineRoute = fn => (req, res) => {
+  try { res.json(fn(req)); } catch (e) {
+    if (e instanceof MachineError) return res.status(400).json({ error: e.message });
+    throw e;
   }
-  // Đồng bộ ngay các acc mới (chạy nền)
-  const ids = results.filter(r => r.ok).map(r => r.id);
-  if (ids.length) runCycle(ids).catch(() => {});
-  res.json({ results });
+};
+app.get('/api/machines', (req, res) => res.json(listMachines()));
+app.post('/api/machines', machineRoute(req => createMachine(req.body || {})));
+app.patch('/api/machines/:id', machineRoute(req => updateMachine(Number(req.params.id), req.body || {})));
+app.delete('/api/machines/:id', machineRoute(req => { deleteMachine(Number(req.params.id)); return { ok: true }; }));
+// Chuyển nhiều acc sang 1 máy: { ids: [...], machine: 'Máy A' | '' }
+app.post('/api/machines/move', machineRoute(req => ({ moved: moveAccounts(req.body?.ids, req.body?.machine) })));
+
+/**
+ * Thêm 1 hoặc nhiều acc: rows [{ cookie, label, proxy }] (hoặc cookies: mỗi dòng 1 cookie).
+ * Trả về ngay; kiểm tra cookie + tải dữ liệu chạy ngầm, xong thì báo (xem addJobs.js)
+ */
+app.post('/api/accounts', (req, res) => {
+  const b = req.body || {};
+  try {
+    res.json({ job: startAddJob(Array.isArray(b.rows) ? b.rows : b.cookies, { label: b.label, note: b.note, group_name: b.group_name, proxy: b.proxy }) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Các lượt thêm acc chạy ngầm chưa đóng thông báo
+app.get('/api/add-jobs', (req, res) => res.json(listJobs()));
+app.post('/api/add-jobs/:id/dismiss', (req, res) => { dismissJob(Number(req.params.id)); res.json({ ok: true }); });
+app.post('/api/add-jobs/:id/retry', (req, res) => {
+  try { res.json({ job: retryJob(Number(req.params.id)) }); } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 app.patch('/api/accounts/:id', async (req, res) => {
@@ -182,7 +180,10 @@ app.patch('/api/accounts/:id', async (req, res) => {
   if (!acc) return res.status(404).json({ error: 'Không tìm thấy' });
   const b = req.body || {};
   const fields = {};
-  for (const k of ['note', 'group_name']) if (k in b) fields[k] = String(b[k] ?? '');
+  if ('note' in b) fields.note = String(b.note ?? '');
+  if ('group_name' in b) {
+    try { fields.group_name = resolveMachine(b.group_name); } catch (e) { return res.status(400).json({ error: e.message }); }
+  }
   if ('label' in b) fields.label = String(b.label ?? '').trim().slice(0, 40) || null;
   if ('proxy' in b) {
     try { fields.proxy = normalizeProxy(b.proxy); } catch (e) { return res.status(400).json({ error: e.message }); }
@@ -403,6 +404,7 @@ app.get('/api/settings', (req, res) => {
 app.put('/api/settings', (req, res) => {
   const b = { ...req.body };
   if (typeof b.telegram_token === 'string' && b.telegram_token.startsWith('••••')) delete b.telegram_token;
+  if ('max_parallel' in b) b.max_parallel = Math.min(PARALLEL_LIMIT, Math.max(1, Math.round(Number(b.max_parallel) || 1)));
   for (const k of ['sync_min_min', 'sync_max_min', 'account_delay_sec', 'idle_hours', 'offline_grace_min', 'usd_vnd', 'daily_report_hour', 'error_alert_count']) {
     if (k in b) b[k] = Math.max(k === 'daily_report_hour' ? 0 : 1, Number(b[k]) || 0);
   }
@@ -507,33 +509,36 @@ app.get('/api/export/:type', (req, res) => {
 });
 
 // ---------- Sao lưu: file zip gồm database + khoá giải mã cookie ----------
-app.get('/api/backup', (req, res) => {
-  const tmp = path.join(os.tmpdir(), `eam-backup-${Date.now()}.db`);
-  try {
-    // VACUUM INTO tạo bản sao nhất quán kể cả khi web đang ghi dữ liệu
-    db.prepare('VACUUM INTO ?').run(tmp);
-    const files = [{ name: 'earnapp.db', data: fs.readFileSync(tmp) }];
-    const keyFile = path.join(DATA_DIR, 'secret.key');
-    if (!process.env.SECRET_KEY && fs.existsSync(keyFile)) files.push({ name: 'secret.key', data: fs.readFileSync(keyFile) });
-    files.push({ name: 'HUONG-DAN-KHOI-PHUC.txt', data: Buffer.from([
-      'KHÔI PHỤC DỮ LIỆU EARNAPP MANAGER',
-      '',
-      '1. Tắt web (docker compose down, hoặc Ctrl+C nếu chạy npm start).',
-      '2. Trong thư mục data/: xoá earnapp.db-wal và earnapp.db-shm nếu có.',
-      '3. Chép earnapp.db' + (files.length > 1 ? ' và secret.key' : '') + ' từ file zip này vào thư mục data/ (ghi đè).',
-      process.env.SECRET_KEY ? '   Web đang dùng SECRET_KEY trong .env: phải giữ đúng SECRET_KEY cũ, nếu không cookie các acc sẽ không đọc được.' : null,
-      '4. Bật lại web.',
-      '',
-      'LƯU Ý: file này chứa cookie EarnApp' + (files.length > 1 ? ' và khoá để giải mã' : '') + '. Ai có file là truy cập được các acc, cần giữ kín.',
-    ].filter(l => l !== null).join('\r\n'), 'utf8') });
-    const stamp = new Intl.DateTimeFormat('sv-SE', { timeZone: getSettings().timezone, dateStyle: 'short', timeStyle: 'short' }).format(Date.now()).replace(/[: ]/g, '-');
-    res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="earnapp-backup-${stamp}.zip"`);
-    res.send(zip(files));
-  } finally {
-    fs.rmSync(tmp, { force: true });
+// ---------- Sao lưu / khôi phục, xuất / nhập danh sách acc (xem backup.js) ----------
+const sendFile = (res, f, type) => {
+  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Disposition', `attachment; filename="${f.name}"`);
+  res.send(f.data);
+};
+const backupRoute = fn => async (req, res) => {
+  try { await fn(req, res); } catch (e) {
+    if (e instanceof BackupError) return res.status(400).json({ error: e.message });
+    throw e;
   }
-});
+};
+const upload = express.raw({ type: () => true, limit: '1gb' });
+
+app.get('/api/backup', (req, res) => sendFile(res, makeBackup(), 'application/zip'));
+// Khôi phục 2 bước: tải file lên để kiểm tra + xem tóm tắt, rồi mới đồng ý
+app.post('/api/restore/check', upload, backupRoute((req, res) => res.json(checkRestore(req.body))));
+app.delete('/api/restore', (req, res) => { cancelRestore(); res.json({ ok: true }); });
+app.post('/api/restore/apply', backupRoute((req, res) => {
+  applyRestore();
+  res.json({ ok: true });
+  // Tắt web để đổi dữ liệu lúc khởi động (systemd tự bật lại sau vài giây)
+  console.log('Khôi phục từ file sao lưu: khởi động lại web');
+  setTimeout(() => process.exit(0), 500);
+}));
+app.post('/api/accounts-file/export', backupRoute((req, res) => sendFile(res, exportAccounts(req.body?.password), 'application/json')));
+// Mật khẩu file gửi ở header (không nằm trong đường dẫn, không vào log)
+app.post('/api/accounts-file/import', upload, backupRoute((req, res) => {
+  res.json(importAccounts(req.body, decodeURIComponent(req.get('x-file-password') || '')));
+}));
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Không tìm thấy' }));
 app.use((err, req, res, next) => {
@@ -556,5 +561,6 @@ app.listen(config.port, err => {
   }
   console.log(`EarnApp Manager chạy tại http://localhost:${config.port}`);
   startScheduler();
+  resumeJobs();
   startWithdrawScheduler();
 });

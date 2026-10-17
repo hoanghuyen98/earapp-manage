@@ -177,6 +177,38 @@ assert.ok(!report.includes('undefined') && !report.includes('NaN'), 'báo cáo k
 assert.ok(report.length < 4096, 'báo cáo vừa 1 tin');
 preview('Báo cáo hằng ngày', report);
 
+// 8b. Có gán máy: tin cảnh báo gom theo máy -> acc -> node, máy chưa gán xuống cuối
+const mAlerts = [
+  { ...acc(31, 'b1@test.com', { type: 'device_offline', device: 'node3' }), label: 'B1', group_name: 'Máy B' },
+  { ...acc(30, 'a2@test.com', { type: 'device_offline', device: 'node1' }), label: 'A2', group_name: 'Máy A' },
+  { ...acc(32, 'x@test.com', { type: 'device_idle', device: 'node9' }) },
+  { ...acc(29, 'a1@test.com', { type: 'device_banned', device: 'node2', reason: 'ip_quality' }), label: 'A1', group_name: 'Máy A' },
+  { ...acc(30, 'a2@test.com', { type: 'device_offline', device: 'node5' }), label: 'A2', group_name: 'Máy A' },
+];
+const mMsg = formatAlerts(mAlerts, s);
+checkHtml(mMsg, 'gom theo máy');
+assert.equal((mMsg.match(/🗄 /g) || []).length, 3, '3 khối máy');
+assert.ok(mMsg.indexOf('Máy A') < mMsg.indexOf('Máy B') && mMsg.indexOf('Máy B') < mMsg.indexOf('Chưa gán máy'), 'máy xếp theo tên, chưa gán xuống cuối');
+assert.ok(mMsg.indexOf('A1 (a1') < mMsg.indexOf('A2 (a2'), 'acc trong máy xếp theo tên');
+assert.match(mMsg, /🗄 <b>Máy A<\/b> · 2 acc/);
+assert.match(mMsg, /2 node RỚT MẠNG[\s\S]*node1[\s\S]*node5/, 'node cùng acc gộp 1 mục');
+preview('Tin cảnh báo gom theo máy', mMsg);
+// Gộp nhiều acc cùng lỗi: danh sách acc chia theo máy
+const mMerged = formatAlerts(['Máy A', 'Máy A', 'Máy B'].map((g, i) => ({ ...acc(40 + i, `c${i}@test.com`, { type: 'auth' }), label: `C${i}`, group_name: g })), s);
+assert.match(mMerged, /▫️ <b>Máy A<\/b>: C0 \(c0@test\.com\), C1 \(c1@test\.com\)\n▫️ <b>Máy B<\/b>: C2/);
+preview('Tin gộp, chia theo máy', mMerged);
+
+// 8c. Báo cáo ngày khi có gán máy: mỗi máy 1 dòng, tên acc lỗi kèm máy, vẫn gọn
+db.prepare("UPDATE accounts SET group_name = 'Máy A' WHERE id = ?").run(accIds[0]);
+db.prepare("UPDATE accounts SET group_name = 'Máy B' WHERE id = ?").run(accIds[1]);
+const mReport = formatDailyReport(s, now);
+checkHtml(mReport, 'báo cáo theo máy');
+assert.match(mReport, /🗄 <b>Máy A<\/b>: \$1\.23 · 1 acc · 1\/2 node chạy · ⚠️ 1 acc có vấn đề/);
+assert.ok(mReport.indexOf('<b>Máy B</b>') < mReport.indexOf('<b>Chưa gán máy</b>'), 'chưa gán máy xuống cuối');
+assert.match(mReport, /dán cookie mới trên web: Máy A: x&lt;y&gt;/, 'tên acc lỗi kèm máy');
+assert.ok(mReport.split('\n').length <= 20 && mReport.length < 4096);
+preview('Báo cáo hằng ngày (có gán máy)', mReport);
+
 globalThis.fetch = realFetch;
 console.log('✓ test-telegram: tất cả đều đúng');
 process.exit(0);

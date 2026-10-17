@@ -9,9 +9,12 @@ export function encrypt(text) {
   return [iv, c.getAuthTag(), enc].map(b => b.toString('base64')).join('.');
 }
 
-export function decrypt(payload) {
+export const decrypt = payload => decryptWith(config.secret, payload);
+
+/** Giải mã bằng khoá chỉ định (kiểm tra file sao lưu của web khác có đọc được không). Sai khoá thì báo lỗi */
+export function decryptWith(key, payload) {
   const [iv, tag, enc] = payload.split('.').map(s => Buffer.from(s, 'base64'));
-  const d = crypto.createDecipheriv('aes-256-gcm', config.secret, iv);
+  const d = crypto.createDecipheriv('aes-256-gcm', key, iv);
   d.setAuthTag(tag);
   return Buffer.concat([d.update(enc), d.final()]).toString('utf8');
 }

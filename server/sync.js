@@ -8,7 +8,6 @@ import { formatDailyReport } from './dailyReport.js';
 import { localDate, addDays, staleMs } from './stats.js';
 import { config } from './config.js';
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const money = n => '$' + (n || 0).toFixed(2);
 const accName = fullName;
 
@@ -317,8 +316,9 @@ async function dailyReport(s) {
 
 // ================== Lập lịch ==================
 // Mỗi acc có lịch riêng: lấy xong thì hẹn lần tới ngẫu nhiên trong [sync_min_min, sync_max_min] phút.
-// Tại một thời điểm chỉ gọi 1 acc, giữa 2 acc cách nhau ít nhất account_delay_sec giây,
-// nên các acc được rải đều theo thời gian thay vì dồn một loạt.
+// Chạy song song tối đa max_parallel acc, nhưng mỗi đường ra (1 proxy, hoặc IP server khi acc không có proxy)
+// chỉ 1 acc mỗi lúc, xong thì đường đó nghỉ account_delay_sec giây mới gọi acc tiếp.
+// Vậy mỗi IP vẫn gọi EarnApp thưa như trước, còn các acc khác proxy không phải xếp hàng chờ nhau.
 
 const rand = (a, b) => a + Math.random() * (b - a);
 
@@ -328,12 +328,51 @@ export function nextDelayMs(s) {
   return rand(lo, hi) * 60e3;
 }
 
-// Khoá: chỉ đồng bộ 1 acc mỗi lúc (lịch tự động và bấm tay dùng chung)
-let lock = Promise.resolve();
-export function withLock(fn) {
-  const r = lock.then(fn, fn);
-  lock = r.catch(() => {});
-  return r;
+// Số acc lấy cùng lúc: chỉnh trong Cài đặt (max_parallel), giới hạn 1–PARALLEL_LIMIT
+export const PARALLEL_LIMIT = 20;
+export const maxParallel = (s = getSettings()) => Math.min(PARALLEL_LIMIT, Math.max(1, Math.round(Number(s.max_parallel) || 1)));
+let active = 0;
+const busyAccounts = new Set();
+const busyRoutes = new Map(); // đường ra -> lúc được dùng lại (Infinity = đang gọi)
+const pending = new Set(); // acc đã xếp hàng (runCycle) chưa chạy xong: lịch tự động không lấy trùng
+const routeOf = proxy => proxy || '';
+const routeOfId = id => routeOf(db.prepare('SELECT proxy FROM accounts WHERE id = ?').get(id)?.proxy);
+
+function take(id, route, now = Date.now()) {
+  if (active >= maxParallel() || busyAccounts.has(id) || (busyRoutes.get(route) ?? 0) > now) return false;
+  active++;
+  busyAccounts.add(id);
+  busyRoutes.set(route, Infinity);
+  return true;
+}
+
+const waiters = new Set();
+// Chờ tới khi có chỗ trống: được gọi dậy khi 1 acc xong, hoặc tự xét lại sau 0,5 giây (đường ra hết giờ nghỉ)
+const waitTurn = () => new Promise(r => {
+  const done = () => { waiters.delete(done); clearTimeout(t); r(); };
+  const t = setTimeout(done, 500);
+  waiters.add(done);
+});
+
+async function runTaken(id, route, fn) {
+  syncState.running = true;
+  syncState.current = id;
+  try { return await fn(); } finally {
+    active--;
+    busyAccounts.delete(id);
+    busyRoutes.set(route, Date.now() + (Number(getSettings().account_delay_sec) || 0) * 1000 * rand(0.7, 1.3));
+    syncState.running = active > 0;
+    if (!active) syncState.current = null;
+    for (const w of [...waiters]) w();
+  }
+}
+
+/** Chạy fn cho 1 acc khi tới lượt: không trùng acc, mỗi đường ra 1 acc, tổng tối đa max_parallel (đồng bộ, rút tiền dùng chung) */
+export async function withLock(fn, id) {
+  const route = routeOfId(id);
+  await null; // luôn chờ lượt bất đồng bộ, như trước
+  while (!take(id, route)) await waitTurn();
+  return runTaken(id, route, fn);
 }
 
 export const alertQueue = [];
@@ -345,7 +384,9 @@ export async function flushAlerts(s) {
   if (!alertQueue.length) return;
   const list = alertQueue.splice(0);
   try {
-    await sendTelegram(formatAlerts(list, s), s);
+    // Gắn máy hiện tại của acc để tin gom theo máy -> acc -> node
+    const machine = new Map(db.prepare('SELECT id, group_name FROM accounts').all().map(r => [r.id, r.group_name || '']));
+    await sendTelegram(formatAlerts(list.map(a => ({ ...a, group_name: machine.get(a.account_id) ?? a.group_name })), s), s);
   } catch (e) {
     // Gửi lỗi (mạng chập chờn, Telegram lỗi): trả lại hàng chờ, phút sau gửi lại. Giữ tối đa 500 cảnh báo mới nhất.
     console.error('telegram', e.message);
@@ -358,8 +399,6 @@ export async function flushAlerts(s) {
 async function syncOne(id, s) {
   const acc = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
   if (!acc) { progress.delete(id); return []; }
-  syncState.running = true;
-  syncState.current = acc.id;
   const started = Date.now();
   setProgress(id, { state: 'running', percent: 0, step: 'Đang kết nối EarnApp', started_at: started });
   // Lấy dữ liệu chiếm 0–95%, phần còn lại là lưu vào database
@@ -388,18 +427,17 @@ async function syncOne(id, s) {
       : { state: 'error', step: 'Lấy dữ liệu lỗi', error: after?.last_error || 'Không rõ lỗi', finished_at: Date.now() });
     const t = new Date().toLocaleTimeString('vi-VN', { timeZone: s.timezone });
     console.log(`[${t}] ${accName(acc)}: đã lấy dữ liệu, lần tới sau ${((next - Date.now()) / 60e3).toFixed(1)} phút`);
-    syncState.running = false;
-    syncState.current = null;
   }
 }
 
-/** Acc tới lượt (đã tới giờ hẹn, không bị giới hạn), lâu nhất trước */
-export function pickDue(now = Date.now()) {
-  const list = db.prepare(`SELECT id, proxy FROM accounts
+/** Các acc tới lượt (đã tới giờ hẹn, không bị giới hạn, chưa xếp hàng / đang chạy), lâu nhất trước */
+function dueList(now = Date.now()) {
+  return db.prepare(`SELECT id, proxy FROM accounts
     WHERE paused = 0 AND (next_sync_at IS NULL OR next_sync_at <= ?) AND (backoff_until IS NULL OR backoff_until <= ?)
-    ORDER BY COALESCE(next_sync_at, 0), id`).all(now, now);
-  return list.find(a => a.proxy || directPauseUntil <= now) || null;
+    ORDER BY COALESCE(next_sync_at, 0), id`).all(now, now)
+    .filter(a => (a.proxy || directPauseUntil <= now) && !pending.has(a.id) && !busyAccounts.has(a.id));
 }
+export const pickDue = (now = Date.now()) => dueList(now)[0] || null;
 
 const stillDue = id => !!db.prepare(`SELECT 1 FROM accounts WHERE id = ? AND paused = 0
   AND (next_sync_at IS NULL OR next_sync_at <= ?) AND (backoff_until IS NULL OR backoff_until <= ?)`).get(id, Date.now(), Date.now());
@@ -435,12 +473,13 @@ export async function runCycle(ids = null) {
       progress.set(id, { state: 'queued', percent: 0, step: 'Đang chờ tới lượt', queued_at: Date.now() });
     }
   }
-  for (const [i, id] of list.entries()) {
+  // Các acc chạy song song theo luật ở withLock (mỗi proxy 1 acc, tối đa max_parallel)
+  await Promise.all(list.map(async id => {
     const acc = db.prepare('SELECT proxy FROM accounts WHERE id = ?').get(id);
-    if (!ids && acc && !acc.proxy && directPauseUntil > Date.now()) continue;
-    await withLock(() => syncOne(id, s));
-    if (i < list.length - 1) await sleep(s.account_delay_sec * 1000 * rand(0.7, 1.3));
-  }
+    if (!ids && acc && !acc.proxy && directPauseUntil > Date.now()) return;
+    pending.add(id);
+    try { await withLock(() => syncOne(id, s), id); } finally { pending.delete(id); }
+  }));
   await flushAlerts(s);
   return true;
 }
@@ -467,25 +506,22 @@ function cleanup(s) {
 export function startScheduler() {
   spreadOverdue();
   markStale();
-  const loop = async () => {
+  const loop = () => {
     const s = getSettings();
-    let wait = 5000;
     try {
-      const due = pickDue();
-      if (due) {
-        // Xét lại sau khi có khoá: lúc chờ, acc có thể vừa được runCycle lấy xong
-        const ran = await withLock(() => stillDue(due.id) && syncOne(due.id, s).then(() => true));
-        wait = ran ? s.account_delay_sec * 1000 * rand(0.7, 1.3) : 500;
-      } else {
-        const n = db.prepare('SELECT MIN(next_sync_at) AS t FROM accounts WHERE paused = 0').get().t;
-        syncState.nextCycleAt = n;
-        // Ngủ tới lượt kế tiếp, nhưng tối đa 5 giây để kịp thấy acc mới / cài đặt mới
-        wait = n ? Math.min(Math.max(n - Date.now(), 500), 5000) : 5000;
+      // Chạy các acc tới lượt khi còn chỗ; acc nào đường ra đang bận / đang nghỉ thì để lần sau
+      for (const due of dueList()) {
+        if (active >= maxParallel(s)) break;
+        const route = routeOf(due.proxy);
+        if (!take(due.id, route)) continue;
+        runTaken(due.id, route, () => stillDue(due.id) ? syncOne(due.id, s) : null).catch(e => console.error('scheduler', e));
       }
+      syncState.nextCycleAt = db.prepare('SELECT MIN(next_sync_at) AS t FROM accounts WHERE paused = 0').get().t;
     } catch (e) {
       console.error('scheduler', e);
     }
-    setTimeout(loop, wait);
+    // Xét lại mỗi giây để kịp thấy acc mới / acc xong / cài đặt mới
+    setTimeout(loop, 1000);
   };
   setTimeout(loop, 2000);
   // Gom cảnh báo gửi Telegram mỗi phút, tránh spam từng tin
@@ -502,8 +538,9 @@ export function startScheduler() {
 export function getProgress(ids, now = Date.now(), s = getSettings()) {
   for (const [id, p] of progress) if (p.finished_at && now - p.finished_at > 10 * 60e3) progress.delete(id);
   const delay = (Number(s.account_delay_sec) || 0) * 1000;
-  const running = [...progress.values()].find(p => p.state === 'running');
-  const runLeft = running ? Math.max(avgSyncMs - (now - running.started_at), 2000) : 0;
+  const running = [...progress.values()].filter(p => p.state === 'running');
+  // Acc đang chạy sớm xong nhất -> lúc có chỗ trống đầu tiên
+  const runLeft = running.length >= maxParallel(s) ? Math.min(...running.map(p => Math.max(avgSyncMs - (now - p.started_at), 2000))) : 0;
   const queue = [...progress.entries()].filter(([, p]) => p.state === 'queued').sort((a, b) => a[1].queued_at - b[1].queued_at).map(([id]) => id);
   const accs = db.prepare(`SELECT id, last_sync_at, last_ok_at, last_error, balance,
     (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0) AS devices FROM accounts a WHERE id IN (${ids.map(() => '?').join(',') || 'NULL'})`).all(...ids);
@@ -519,8 +556,9 @@ export function getProgress(ids, now = Date.now(), s = getSettings()) {
       eta = p.percent >= 15 ? spent * (100 - p.percent) / p.percent : Math.max(avgSyncMs - spent, 2000);
     } else if (p.state === 'queued') {
       const pos = queue.indexOf(a.id);
-      eta = runLeft + delay + Math.max(pos, 0) * (avgSyncMs + delay) + avgSyncMs;
-      p.ahead = Math.max(pos, 0) + (running ? 1 : 0);
+      // Chạy song song max_parallel acc: cứ max_parallel acc phía trước thì thêm 1 lượt chờ
+      eta = runLeft + delay + Math.floor(Math.max(pos, 0) / maxParallel(s)) * (avgSyncMs + delay) + avgSyncMs;
+      p.ahead = Math.max(pos, 0) + running.length;
     }
     return { id: a.id, ...p, eta_sec: eta == null ? null : Math.round(eta / 1000), devices: a.devices, balance: a.balance };
   });

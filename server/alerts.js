@@ -1,9 +1,10 @@
 import { esc } from './telegram.js';
-import { fullName } from './accname.js';
+import { fullName, byAccount } from './accname.js';
 
 // Soạn tin Telegram từ danh sách cảnh báo.
 // Mỗi mục: 1 dòng tiêu đề in đậm, vài dòng "•" chi tiết, 1 dòng "👉" việc cần làm (nếu có).
-// Gom theo tài khoản; lỗi giống nhau ở nhiều acc thì gộp thành 1 mục chung.
+// Gom theo máy -> tài khoản -> node (giống trang Node); lỗi giống nhau ở nhiều acc thì gộp thành 1 mục chung.
+// Máy = group_name của acc (flushAlerts gắn vào trước khi soạn). Không acc nào có máy thì bỏ lớp máy.
 
 const BAN_REASON = {
   earnapp_blacklist: 'IP bị đưa vào danh sách đen', earnapp_ip_blacklist: 'IP bị đưa vào danh sách đen',
@@ -34,11 +35,33 @@ const ORDER = ['redeem_details_changed', 'withdraw_changed', 'account_banned', '
 const MERGE = ['sync_error', 'sync_ok', 'auth', 'rate_limit'];
 const MERGE_MIN = 3;
 const LIST_MAX = 10;
+const NO_MACHINE = 'Chưa gán máy';
+const machineOf = a => a.group_name || '';
 
 function list(items, fmt) {
   const lines = items.slice(0, LIST_MAX).map(a => '• ' + fmt(a));
   if (items.length > LIST_MAX) lines.push(`• … và ${items.length - LIST_MAX} mục khác`);
   return lines.join('\n');
+}
+
+// Danh sách acc trong mục gộp: có máy thì mỗi máy 1 dòng "▫️ Máy A: A1 (...), A2 (...)"
+function mergedAccList(g) {
+  if (!g.some(machineOf)) return list(g, x => esc(fullName(x))).replace(/^• /gm, '▫️ ');
+  const shown = [...g].sort(byAccount).slice(0, LIST_MAX);
+  const lines = groupBy(shown, machineOf).map(([m, accs]) => `▫️ <b>${esc(m || NO_MACHINE)}</b>: ${accs.map(x => esc(fullName(x))).join(', ')}`);
+  if (g.length > LIST_MAX) lines.push(`▫️ … và ${g.length - LIST_MAX} acc khác`);
+  return lines.join('\n');
+}
+
+/** [[key, items], ...] giữ thứ tự xuất hiện */
+function groupBy(items, key) {
+  const map = new Map();
+  for (const x of items) {
+    const k = key(x);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(x);
+  }
+  return [...map.entries()];
 }
 
 export function formatAlerts(alerts, s) {
@@ -56,7 +79,7 @@ export function formatAlerts(alerts, s) {
     const n = g.length, a = g[0];
     // Tiêu đề: 1 acc -> "Cookie hết hạn"; gộp nhiều acc -> "3 acc cookie hết hạn" kèm danh sách acc
     const head = text => merged ? `${n} acc ${text[0].toLowerCase()}${text.slice(1)}` : text;
-    const accList = () => merged ? '\n' + list(g, x => esc(accName(x))).replace(/^• /gm, '▫️ ') : '';
+    const accList = () => merged ? '\n' + mergedAccList(g) : '';
     switch (type) {
       case 'redeem_details_changed': {
         const fmt = d => d ? `${esc(methodName(d.payment_method))} → ${esc(d.email)}` : 'chưa cài';
@@ -129,24 +152,26 @@ export function formatAlerts(alerts, s) {
     }
   }
 
-  const byAcc = new Map();
-  for (const a of rest) {
-    if (!byAcc.has(a.account_id)) byAcc.set(a.account_id, []);
-    byAcc.get(a.account_id).push(a);
-  }
+  // Acc xếp theo máy rồi theo tên, giống thứ tự trên web
+  const byAcc = groupBy([...rest].sort((x, y) => byAccount(x, y) || (x.account_id - y.account_id)), a => a.account_id).map(([, items]) => items);
 
   // Cảnh báo bị giữ lại do gửi lỗi trước đó: ghi rõ là gửi trễ
   const oldest = Math.min(...alerts.map(a => a.ts || Date.now()));
   const late = Date.now() - oldest > 5 * 60e3 ? `\n⏱ Gửi trễ do lỗi kết nối Telegram, có tin từ ${when(oldest)}` : '';
   const blocks = [`🔔 <b>EarnApp</b> · ${hhmm(Date.now())} ${ddmm(Date.now())} · ${alerts.length} thông báo${late}`];
   for (const type of ORDER) for (const m of merged.filter(x => x.type === type)) blocks.push(item(type, m.g, true));
-  for (const items of byAcc.values()) {
+  const accBlock = items => {
     const parts = [`👤 <b>${esc(accName(items[0]))}</b>`];
     for (const type of ORDER) {
       const g = items.filter(a => a.type === type);
       if (g.length) parts.push(item(type, g));
     }
-    blocks.push(parts.filter(Boolean).join('\n\n'));
+    return parts.filter(Boolean).join('\n\n');
+  };
+  if (!byAcc.some(items => machineOf(items[0]))) blocks.push(...byAcc.map(accBlock));
+  else for (const [m, accs] of groupBy(byAcc, items => machineOf(items[0]))) {
+    // Đầu mỗi máy: tên máy + số acc có thông báo, các acc của máy nối tiếp bên dưới
+    blocks.push(`🗄 <b>${esc(m || NO_MACHINE)}</b> · ${accs.length} acc\n\n` + accs.map(accBlock).join('\n\n┈┈┈\n\n'));
   }
   return blocks[0] + '\n\n' + blocks.slice(1).join('\n\n— — —\n\n');
 }

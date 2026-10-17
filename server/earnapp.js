@@ -2,7 +2,6 @@ import { ProxyAgent, Socks5ProxyAgent } from 'undici';
 
 const BASE = 'https://earnapp.com/dashboard/api/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
-const KEEP = ['oauth-refresh-token', 'oauth-token', 'auth', 'auth-method', 'xsrf-token'];
 
 export class AuthError extends Error {}
 export class BannedError extends Error {}
@@ -14,23 +13,17 @@ export class RateLimitError extends Error {
 }
 
 /**
- * Chuẩn hoá cookie người dùng dán vào: chấp nhận cả chuỗi cookie đầy đủ
- * từ trình duyệt hoặc chỉ giá trị oauth-refresh-token.
- * Chỉ giữ các cookie cần cho đăng nhập.
+ * Cookie người dùng dán vào: dùng NGUYÊN VĂN, không lọc bỏ hay thêm phần nào.
+ * EarnApp có phiên cần cả cookie trông không liên quan (VD brd_sess_id): bỏ đi là báo "auth required" dù cookie vẫn dùng được.
+ * Chỉ bỏ khoảng trắng ở 2 đầu và chữ "Cookie:" nếu dán cả dòng header.
+ * Dán mỗi giá trị oauth-refresh-token (không có dấu =) thì ghép thành cookie.
  */
 export function normalizeCookie(input) {
   const raw = String(input || '').trim().replace(/^cookie:\s*/i, '');
   if (!raw) throw new Error('Cookie trống');
-  if (!raw.includes('=')) {
-    // Chỉ dán refresh token
-    return `oauth-refresh-token=${raw}; auth=1; auth-method=google`;
-  }
-  const parts = Object.fromEntries(raw.split(/;\s*/).filter(p => p.includes('='))
-    .map(p => [p.slice(0, p.indexOf('=')).trim(), p.slice(p.indexOf('=') + 1).trim()]));
-  if (!parts['oauth-refresh-token']) throw new Error('Không tìm thấy oauth-refresh-token trong cookie');
-  parts.auth ??= '1';
-  parts['auth-method'] ??= 'google';
-  return KEEP.filter(k => parts[k]).map(k => `${k}=${parts[k]}`).join('; ');
+  if (!raw.includes('=')) return `oauth-refresh-token=${raw}; auth=1; auth-method=google`;
+  if (!/(^|;\s*)oauth-refresh-token=/.test(raw)) throw new Error('Không tìm thấy oauth-refresh-token trong cookie');
+  return raw;
 }
 
 /** Proxy hợp lệ: http(s)://… hoặc socks5://… (có thể kèm user:pass@). Trả về chuỗi đã chuẩn hoá, sai thì báo lỗi. */

@@ -50,3 +50,42 @@ export function zip(files) {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...local, ...central, end]);
 }
+
+/**
+ * Đọc file .zip (tạo bởi zip() ở trên, hoặc nén lại bằng Windows / 7-Zip): trả về [{ name, data: Buffer }].
+ * Chỉ hỗ trợ kiểu lưu thẳng (0) và deflate (8). File hỏng / không phải zip thì báo lỗi.
+ */
+export function unzip(buf) {
+  const MAX = 2 * 1024 ** 3;
+  let end = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { end = i; break; }
+  }
+  if (end < 0) throw new Error('File không phải file zip');
+  const count = buf.readUInt16LE(end + 10);
+  let p = buf.readUInt32LE(end + 16);
+  const out = [];
+  for (let k = 0; k < count; k++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('File zip bị hỏng');
+    const method = buf.readUInt16LE(p + 10);
+    const crc = buf.readUInt32LE(p + 16);
+    const csize = buf.readUInt32LE(p + 20);
+    const size = buf.readUInt32LE(p + 24);
+    const nlen = buf.readUInt16LE(p + 28), xlen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32);
+    const at = buf.readUInt32LE(p + 42);
+    const name = buf.subarray(p + 46, p + 46 + nlen).toString('utf8');
+    p += 46 + nlen + xlen + clen;
+    if (name.endsWith('/')) continue; // thư mục
+    if (size > MAX) throw new Error(`File ${name} trong zip quá lớn`);
+    const start = at + 30 + buf.readUInt16LE(at + 26) + buf.readUInt16LE(at + 28);
+    const body = buf.subarray(start, start + csize);
+    let data;
+    if (method === 0) data = Buffer.from(body);
+    else if (method === 8) data = zlib.inflateRawSync(body, { maxOutputLength: MAX });
+    else throw new Error(`File ${name} nén kiểu không hỗ trợ (chỉ đọc được zip thường)`);
+    if (zlib.crc32(data) !== crc) throw new Error(`File ${name} trong zip bị hỏng`);
+    // Bỏ thư mục trong tên: nén lại cả thư mục thì vẫn tìm được earnapp.db
+    out.push({ name: name.split('/').pop(), data });
+  }
+  return out;
+}

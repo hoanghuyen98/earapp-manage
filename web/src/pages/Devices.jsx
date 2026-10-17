@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Server, Download, ChevronRight, ChevronsUpDown } from 'lucide-react';
 import { api, usd, duration, timeAgo, fmtBytes, DEVICE_STATUS, countryCode } from '../lib';
@@ -74,19 +74,36 @@ const STATUS_ORDER = ['online', 'idle', 'offline', 'banned', 'unknown'];
 // Node cần để ý: rớt mạng, lâu không tăng tiền, chưa rõ
 const isProblem = d => d.status === 'offline' || d.status === 'idle' || d.status === 'unknown';
 
-function groupByAccount(devices) {
-  const map = new Map();
+function summarize(g, devices) {
+  Object.assign(g, { devices, counts: {}, problems: 0, today: 0, usage: 0, earned: 0 });
   for (const d of devices) {
-    let g = map.get(d.account_id);
-    if (!g) map.set(d.account_id, g = { id: d.account_id, label: d.label, email: d.email, group_name: d.group_name, devices: [], counts: {}, problems: 0, today: 0, usage: 0, earned: 0 });
-    g.devices.push(d);
     g.counts[d.status] = (g.counts[d.status] || 0) + 1;
     if (isProblem(d)) g.problems++;
     g.today += d.today || 0;
     g.usage += d.usage_today || 0;
     g.earned += d.earned_total || 0;
   }
-  return [...map.values()];
+  return g;
+}
+
+function groupByAccount(devices) {
+  const map = new Map();
+  for (const d of devices) {
+    if (!map.has(d.account_id)) map.set(d.account_id, { id: d.account_id, label: d.label, email: d.email, group_name: d.group_name, list: [] });
+    map.get(d.account_id).list.push(d);
+  }
+  return [...map.values()].map(g => summarize(g, g.list));
+}
+
+// Máy = group_name của acc. Acc chưa gán máy gom chung một dòng, xếp cuối.
+function groupByMachine(accounts) {
+  const map = new Map();
+  for (const a of accounts) {
+    const name = a.group_name || '';
+    if (!map.has(name)) map.set(name, { id: 'm:' + name, group_name: name, accounts: [] });
+    map.get(name).accounts.push(a);
+  }
+  return [...map.values()].map(m => summarize(m, m.accounts.flatMap(a => a.devices)));
 }
 
 const SORTS = {
@@ -113,44 +130,76 @@ function StatusCounts({ counts }) {
   );
 }
 
+function GroupRow({ g, isOpen, toggle, title, sub, children }) {
+  return (
+    <div>
+      <button onClick={() => toggle(g.id)} className="flex w-full cursor-pointer text-sm flex-col gap-1.5 px-4 py-3 text-left hover:bg-zinc-50/80 md:flex-row md:items-center md:gap-4 md:px-5 dark:hover:bg-zinc-800/40">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ChevronRight className={cx('size-4 shrink-0 text-zinc-400 transition', isOpen && 'rotate-90')} />
+          {title}
+          <span className="shrink-0 text-xs text-zinc-400 tabular">{sub}</span>
+          {g.problems > 0 && <span className="shrink-0 text-xs font-medium text-bad">{g.problems} cần xem</span>}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-1 pl-6 md:pl-0">
+          <StatusCounts counts={g.counts} />
+          <div className="flex gap-4 text-xs text-zinc-500 tabular">
+            <span title="Hôm nay">{usd(g.today, 3)}</span>
+            <span title="Dung lượng hôm nay" className="hidden sm:inline">{fmtBytes(g.usage)}</span>
+            <span className="w-20 text-right font-medium text-zinc-700 dark:text-zinc-200" title="Tổng kiếm">{usd(g.earned, 3)}</span>
+          </div>
+        </div>
+      </button>
+      {isOpen && children}
+    </div>
+  );
+}
+
+function GroupHeader({ first }) {
+  return (
+    <div className="hidden items-center gap-4 bg-zinc-50/70 px-5 py-2 text-[11px] font-medium uppercase tracking-[.05em] text-zinc-500 md:flex dark:bg-zinc-800/30">
+      <span className="flex-1 pl-6">{first}</span>
+      <span>Node</span>
+      <span className="flex gap-4"><span>Hôm nay</span><span>Dung lượng</span><span className="w-20 text-right">Tổng kiếm</span></span>
+    </div>
+  );
+}
+
+function AccountRows({ groups, open, toggle, inMachine }) {
+  return groups.map(g => (
+    <GroupRow key={g.id} g={g} isOpen={open.has(g.id)} toggle={toggle}
+      title={<AccName label={g.label} email={g.email} group={inMachine ? null : g.group_name} />} sub={`${g.devices.length} node`}>
+      <div className="border-t border-zinc-100 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-950/30">
+        <div className="px-5 pt-2 text-xs"><Link to={`/accounts/${g.id}`} className="font-medium text-indigo-600 hover:underline dark:text-indigo-300">Chi tiết tài khoản →</Link></div>
+        <DeviceTable devices={g.devices} />
+      </div>
+    </GroupRow>
+  ));
+}
+
 function AccountGroups({ groups, open, toggle }) {
   if (!groups.length) return <Empty icon={Server} title="Không có node nào" />;
   return (
     <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-      <div className="hidden items-center gap-4 bg-zinc-50/70 px-5 py-2 text-[11px] font-medium uppercase tracking-[.05em] text-zinc-500 md:flex dark:bg-zinc-800/30">
-        <span className="flex-1 pl-6">Tài khoản</span>
-        <span>Node</span>
-        <span className="flex gap-4"><span>Hôm nay</span><span>Dung lượng</span><span className="w-20 text-right">Tổng kiếm</span></span>
-      </div>
-      {groups.map(g => {
-        const isOpen = open.has(g.id);
-        return (
-          <div key={g.id}>
-            <button onClick={() => toggle(g.id)} className="flex w-full cursor-pointer text-sm flex-col gap-1.5 px-4 py-3 text-left hover:bg-zinc-50/80 md:flex-row md:items-center md:gap-4 md:px-5 dark:hover:bg-zinc-800/40">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <ChevronRight className={cx('size-4 shrink-0 text-zinc-400 transition', isOpen && 'rotate-90')} />
-                <AccName label={g.label} email={g.email} group={g.group_name} />
-                <span className="shrink-0 text-xs text-zinc-400 tabular">{g.devices.length} node</span>
-                {g.problems > 0 && <span className="shrink-0 text-xs font-medium text-bad">{g.problems} cần xem</span>}
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-1 pl-6 md:pl-0">
-                <StatusCounts counts={g.counts} />
-                <div className="flex gap-4 text-xs text-zinc-500 tabular">
-                  <span title="Hôm nay">{usd(g.today, 3)}</span>
-                  <span title="Dung lượng hôm nay" className="hidden sm:inline">{fmtBytes(g.usage)}</span>
-                  <span className="w-20 text-right font-medium text-zinc-700 dark:text-zinc-200" title="Tổng kiếm">{usd(g.earned, 3)}</span>
-                </div>
-              </div>
-            </button>
-            {isOpen && (
-              <div className="border-t border-zinc-100 bg-zinc-50/50 dark:border-zinc-800 dark:bg-zinc-950/30">
-                <div className="px-5 pt-2 text-xs"><Link to={`/accounts/${g.id}`} className="font-medium text-indigo-600 hover:underline dark:text-indigo-300">Chi tiết tài khoản →</Link></div>
-                <DeviceTable devices={g.devices} />
-              </div>
-            )}
+      <GroupHeader first="Tài khoản" />
+      <AccountRows groups={groups} open={open} toggle={toggle} />
+    </div>
+  );
+}
+
+function MachineGroups({ machines, open, toggle }) {
+  if (!machines.length) return <Empty icon={Server} title="Không có node nào" />;
+  return (
+    <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+      <GroupHeader first="Máy" />
+      {machines.map(m => (
+        <GroupRow key={m.id} g={m} isOpen={open.has(m.id)} toggle={toggle}
+          title={<span className="truncate font-semibold">{m.group_name || 'Chưa gán máy'}</span>}
+          sub={`${m.accounts.length} acc · ${m.devices.length} node`}>
+          <div className="divide-y divide-zinc-100 border-t border-zinc-100 bg-zinc-50/40 pl-4 md:pl-6 dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-950/20">
+            <AccountRows groups={m.accounts} open={open} toggle={toggle} inMachine />
           </div>
-        );
-      })}
+        </GroupRow>
+      ))}
     </div>
   );
 }
@@ -158,11 +207,12 @@ function AccountGroups({ groups, open, toggle }) {
 export default function Devices() {
   const [params, setParams] = useSearchParams();
   const status = params.get('status') || 'all';
-  const view = params.get('view') === 'list' ? 'list' : 'group';
+  const view = ['acc', 'list'].includes(params.get('view')) ? params.get('view') : 'machine';
   const sort = SORTS[params.get('sort')] ? params.get('sort') : 'problems';
   const group = params.get('group') || '';
   const [q, setQ] = useState('');
-  const [open, setOpen] = useState(() => new Set());
+  // Mở từ trang Máy (?group=...): mở sẵn máy đó để thấy ngay các acc
+  const [open, setOpen] = useState(() => new Set(params.get('group') ? ['m:' + params.get('group')] : []));
   const { data, loading } = useData(() => api('/devices'), [], 30000);
 
   const list = useMemo(() => {
@@ -172,8 +222,14 @@ export default function Devices() {
       .sort((a, b) => byAccount(a, b) || a.title.localeCompare(b.title, 'vi', { numeric: true }));
   }, [data, q, status, group]);
   const groups = useMemo(() => sortGroups(groupByAccount(list), sort), [list, sort]);
-  // Đang tìm thì mở sẵn các acc khớp, xoá ô tìm thì thu gọn lại
-  useEffect(() => { setOpen(new Set(q.trim() ? groups.map(g => g.id) : [])); }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Acc trong mỗi máy giữ đúng thứ tự sắp xếp đang chọn
+  const machines = useMemo(() => sortGroups(groupByMachine(groups), sort), [groups, sort]);
+  // Đang tìm thì mở sẵn các máy và acc khớp, xoá ô tìm thì thu gọn lại
+  const firstQ = useRef(true);
+  useEffect(() => {
+    if (firstQ.current) { firstQ.current = false; return; } // lần đầu vào trang giữ máy đang mở sẵn
+    setOpen(new Set(q.trim() ? [...machines, ...groups].map(g => g.id) : []));
+  }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading && !data) return <PageLoading />;
   const all = data || [];
@@ -183,7 +239,8 @@ export default function Devices() {
   const groupNames = [...new Set(all.map(d => d.group_name).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi', { numeric: true }));
   const setParam = (k, v, def) => { v === def ? params.delete(k) : params.set(k, v); setParams(params, { replace: true }); };
   const toggle = id => setOpen(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const allOpen = groups.length > 0 && groups.every(g => open.has(g.id));
+  const shown = view === 'machine' ? machines : groups;
+  const allOpen = shown.length > 0 && shown.every(g => open.has(g.id));
 
   return (
     <>
@@ -206,23 +263,26 @@ export default function Devices() {
         </div>
       </div>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <Tabs value={view} onChange={v => setParam('view', v, 'group')} items={[
-          { value: 'group', label: 'Theo acc', count: groups.length },
+        <Tabs value={view} onChange={v => setParam('view', v, 'machine')} items={[
+          { value: 'machine', label: 'Theo máy', count: machines.length },
+          { value: 'acc', label: 'Theo acc', count: groups.length },
           { value: 'list', label: 'Tất cả node', count: list.length },
         ]} />
-        {view === 'group' && groups.length > 0 && (
+        {view !== 'list' && shown.length > 0 && (
           <div className="flex items-center gap-2">
-            <select value={sort} onChange={e => setParam('sort', e.target.value, 'problems')} title="Sắp xếp tài khoản" className="h-8 rounded-xl border-0 bg-white px-3 text-[13px] ring-1 ring-inset ring-zinc-200 dark:bg-zinc-800/60 dark:ring-zinc-700 cursor-pointer">
+            <select value={sort} onChange={e => setParam('sort', e.target.value, 'problems')} title="Sắp xếp" className="h-8 rounded-xl border-0 bg-white px-3 text-[13px] ring-1 ring-inset ring-zinc-200 dark:bg-zinc-800/60 dark:ring-zinc-700 cursor-pointer">
               {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </select>
-            <Button variant="secondary" size="sm" icon={ChevronsUpDown} onClick={() => setOpen(allOpen ? new Set() : new Set(groups.map(g => g.id)))}>
+            <Button variant="secondary" size="sm" icon={ChevronsUpDown} onClick={() => setOpen(prev => { const n = new Set(prev); shown.forEach(g => allOpen ? n.delete(g.id) : n.add(g.id)); return n; })}>
               {allOpen ? 'Thu gọn' : 'Mở hết'}
             </Button>
           </div>
         )}
       </div>
       <Card className="overflow-hidden">
-        {view === 'group' ? <AccountGroups groups={groups} open={open} toggle={toggle} /> : <DeviceTable devices={list} showAccount />}
+        {view === 'machine' ? <MachineGroups machines={machines} open={open} toggle={toggle} />
+          : view === 'acc' ? <AccountGroups groups={groups} open={open} toggle={toggle} />
+          : <DeviceTable devices={list} showAccount />}
       </Card>
     </>
   );

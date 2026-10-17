@@ -146,7 +146,7 @@ export default function Dashboard() {
   const [days, setDays] = useState(30);
   const [metric, setMetric] = useState('earn');
   const [split, setSplit] = useState('total');
-  const [tableMode, setTableMode] = useState('accounts');
+  const [tableMode, setTableMode] = useState(null);
   const { data: d, loading, reload } = useData(() => api(`/overview?days=${days}&${scope.qs}`), [days, scope.qs], 30000);
   const [syncing, setSyncing] = useState(false);
 
@@ -192,6 +192,8 @@ export default function Dashboard() {
     { key: 'lifetime', label: 'Tổng kiếm', align: 'right', hide: 'md', render: r => usd(r.lifetime) },
   ];
 
+  // Có từ 2 máy trở lên thì mặc định xem theo máy (bấm vào máy để xem các acc của máy)
+  const mode = tableMode ?? (d.groups.length > 1 ? 'groups' : 'accounts');
   const devTotal = d.devices.online + d.devices.idle + d.devices.offline + d.devices.banned + (d.devices.unknown || 0);
 
   return (
@@ -268,10 +270,10 @@ export default function Dashboard() {
 
       <Card className="mt-6 overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-2 px-5 pt-4 pb-3">
-          <h3 className="text-[13px] font-semibold uppercase tracking-[.06em] text-zinc-500 dark:text-zinc-400">{tableMode === 'accounts' ? 'Theo tài khoản' : 'Theo máy'}</h3>
-          {d.groups.length > 0 && <SegTabs value={tableMode} onChange={setTableMode} items={[['accounts', 'Tài khoản'], ['groups', 'Máy']]} />}
+          <h3 className="text-[13px] font-semibold uppercase tracking-[.06em] text-zinc-500 dark:text-zinc-400">{mode === 'accounts' ? 'Theo tài khoản' : 'Theo máy'}</h3>
+          {d.groups.length > 0 && <SegTabs value={mode} onChange={setTableMode} items={[['groups', 'Máy'], ['accounts', 'Tài khoản']]} />}
         </div>
-        {tableMode === 'accounts' || !d.groups.length ? (
+        {mode === 'accounts' || !d.groups.length ? (
           <SortTable columns={accountCols} rows={[...d.rows].sort(byAccount)} initialSort={{ key: 'today', dir: 'desc' }} onRowClick={r => navigate(`/accounts/${r.id}`)}
             empty={<Empty icon={Users} title="Không có tài khoản" />}
             footer={d.rows.length > 1 ? {

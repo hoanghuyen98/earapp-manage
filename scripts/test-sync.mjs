@@ -8,7 +8,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eam-test-'));
 const { db, getSettings, setSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, AuthError, BannedError, RateLimitError } = await import('../server/earnapp.js');
-const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, markStale, getProgress } = await import('../server/sync.js');
+const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, markStale, getProgress, maxParallel } = await import('../server/sync.js');
 const { summary } = await import('../server/stats.js');
 const { formatAlerts } = await import('../server/alerts.js');
 const has = (list, type) => list.some(a => a.type === type);
@@ -430,6 +430,49 @@ setSettings({ telegram_token: '', telegram_chat_id: '' });
   await syncAccount(sacc(), s());
   assert.equal(devRow('s1').status, 'online');
   assert.equal(summary().accounts.stale, staleBefore - 1, 'hết bị coi là dữ liệu cũ');
+}
+
+// Chạy song song: acc khác proxy chạy cùng lúc (tối đa max_parallel trong Cài đặt), cùng proxy / không proxy thì lần lượt,
+// acc đang xếp hàng thì lịch tự động không lấy trùng
+{
+  assert.equal(maxParallel(), 10, 'mặc định 10 acc cùng lúc');
+  assert.equal(maxParallel({ max_parallel: 99 }), 20, 'tối đa 20');
+  assert.equal(maxParallel({ max_parallel: 0 }), 1, 'ít nhất 1');
+  setSettings({ account_delay_sec: 0, max_parallel: 4 });
+  const mk = (email, proxy) => Number(db.prepare('INSERT INTO accounts(email, cookie_enc, proxy, created_at) VALUES (?, ?, ?, ?)')
+    .run(email, encrypt('oauth-refresh-token=x'), proxy, Date.now()).lastInsertRowid);
+  const ids = [
+    ...[1, 2, 3, 4, 5, 6].map(i => mk(`p${i}@test.com`, `socks5://10.0.0.${i}:1080`)),
+    mk('same1@test.com', 'socks5://10.0.0.9:1080'), mk('same2@test.com', 'socks5://10.0.0.9:1080'),
+    mk('direct1@test.com', ''), mk('direct2@test.com', ''),
+  ];
+  const savedFetch = EarnAppClient.prototype.fetchAll;
+  let now = 0, peak = 0, overlapSameRoute = false, t0 = Date.now();
+  const starts = [];
+  const routeNow = new Map();
+  EarnAppClient.prototype.fetchAll = async function () {
+    const key = this.dispatcher ? [...routeNow.keys()].find(k => k === this.dispatcher) ?? this.dispatcher : 'direct';
+    if (routeNow.get(key)) overlapSameRoute = true;
+    routeNow.set(key, 1);
+    now++; peak = Math.max(peak, now); starts.push(Date.now() - t0);
+    await new Promise(r => setTimeout(r, 150));
+    now--; routeNow.delete(key);
+    return { ...base(), user: { email: 'x@test.com' }, devices: [], statuses: {}, usage: [], usageMonthly: null };
+  };
+  t0 = Date.now();
+  const run = runCycle(ids);
+  assert.ok(ids.every(id => !pickDue() || pickDue().id !== id), 'acc đang xếp hàng: lịch tự động không lấy trùng');
+  await run;
+  const took = Date.now() - t0;
+  console.log('bắt đầu lúc (ms):', starts.join(', '));
+  console.log(`10 acc (6 proxy riêng, 2 chung proxy, 2 không proxy): chạy cùng lúc tối đa ${peak}, mất ${took}ms`);
+  assert.equal(peak, 4, 'chạy song song đúng số trong Cài đặt');
+  assert.ok(!overlapSameRoute, 'cùng 1 proxy (hoặc cùng IP server) không bao giờ chạy chồng');
+  // 8 acc có proxy (7 đường ra) xong trong ~3 lượt thay vì 8 lượt nối nhau; 2 acc không proxy vẫn chờ nhau
+  assert.ok(starts.slice(0, 8).every(t => t < 2000), '8 acc có proxy đều được chạy ngay, không xếp hàng nối đuôi');
+  assert.ok(starts[9] - starts[8] >= 150, 'acc không proxy chạy lần lượt (cùng IP server)');
+  assert.ok(ids.every(id => getProgress([id])[0].state === 'done'), 'acc nào cũng xong');
+  EarnAppClient.prototype.fetchAll = savedFetch;
 }
 
 console.log('✅ Tất cả test đều đạt');

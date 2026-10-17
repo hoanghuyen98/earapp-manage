@@ -1,11 +1,27 @@
 import { db } from './db.js';
 import { esc } from './telegram.js';
 import { localDate, summary, staleMs } from './stats.js';
+import { cmp, byAccount } from './accname.js';
 
 const NAMES_MAX = 3; // mỗi loại vấn đề ghi tối đa 3 tên acc, còn lại "+N"
+const MACHINES_MAX = 8; // mỗi máy 1 dòng, nhiều hơn thì gộp "+N máy khác"
+const NO_MACHINE = 'Chưa gán máy';
 
 /** Tên ngắn: tên riêng, không có thì phần trước @ của email */
 const shortName = a => a.label || String(a.email || `#${a.id}`).split('@')[0];
+
+/** Tên acc kèm máy, gom theo máy: "Máy A: A1, A2 · Máy B: B1" */
+function nameList(list, hasMachines) {
+  const shown = [...list].sort(byAccount).slice(0, NAMES_MAX);
+  if (!hasMachines) return shown.map(a => esc(shortName(a))).join(', ');
+  const byM = new Map();
+  for (const a of shown) {
+    const k = a.group_name || NO_MACHINE;
+    if (!byM.has(k)) byM.set(k, []);
+    byM.get(k).push(esc(shortName(a)));
+  }
+  return [...byM].map(([m, n]) => `${esc(m)}: ${n.join(', ')}`).join(' · ');
+}
 
 /** Báo cáo cuối ngày gửi Telegram: gọn, độ dài cố định dù có bao nhiêu acc. Chi tiết xem trên web */
 export function formatDailyReport(s, now = Date.now()) {
@@ -17,10 +33,11 @@ export function formatDailyReport(s, now = Date.now()) {
   const hhmm = ts => new Intl.DateTimeFormat('vi-VN', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ts);
   const nonZero = items => items.filter(([n]) => n > 0).map(([n, e, l]) => `${e}${n} ${l}`).join(' · ');
 
-  const accs = db.prepare(`SELECT a.id, a.email, a.label, a.status, a.paused, a.auth_state, a.last_ok_at, a.suspect_reason, a.balance,
+  const accs = db.prepare(`SELECT a.id, a.email, a.label, a.group_name, a.status, a.paused, a.auth_state, a.last_ok_at, a.suspect_reason, a.balance,
       (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0 AND d.status IN ('online', 'idle')) AS running,
-      (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0) AS total
-    FROM accounts a WHERE a.archived_at IS NULL`).all();
+      (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id AND d.missing = 0) AS total,
+      COALESCE((SELECT last_total - first_total FROM account_daily ad WHERE ad.account_id = a.id AND ad.date = ?), 0) AS today
+    FROM accounts a WHERE a.archived_at IS NULL`).all(today);
   const staleCut = now - staleMs(s);
   const isStale = a => !a.paused && a.status !== 'banned' && (a.last_ok_at || 0) < staleCut;
 
@@ -42,15 +59,33 @@ export function formatDailyReport(s, now = Date.now()) {
     ['❓', 'nghi bị khoá', () => 'kiểm tra trên EarnApp', a => !!a.suspect_reason],
     ['⚫', 'không node nào chạy', () => 'bật lại máy / app EarnApp', a => a.total > 0 && a.running === 0],
   ];
+  const hasMachines = accs.some(a => a.group_name);
   const taken = new Set();
   const issues = [];
   for (const [icon, label, todo, test] of groups) {
     const list = accs.filter(a => !taken.has(a.id) && test(a));
     list.forEach(a => taken.add(a.id));
     if (!list.length) continue;
-    const names = list.slice(0, NAMES_MAX).map(a => esc(shortName(a))).join(', ') + (list.length > NAMES_MAX ? ` +${list.length - NAMES_MAX}` : '');
+    const names = nameList(list, hasMachines) + (list.length > NAMES_MAX ? ` +${list.length - NAMES_MAX}` : '');
     issues.push(`${icon} ${list.length} ${label} → ${todo(list)}: ${names}`);
   }
+  // Theo máy: mỗi máy 1 dòng (tiền hôm nay, node đang chạy, số acc có vấn đề). Không acc nào gán máy thì bỏ qua
+  if (hasMachines) {
+    const machines = new Map();
+    for (const a of accs) {
+      const k = a.group_name || '';
+      if (!machines.has(k)) machines.set(k, { name: k, accs: 0, today: 0, running: 0, total: 0, bad: 0 });
+      const m = machines.get(k);
+      m.accs++; m.today += a.today || 0; m.running += a.running; m.total += a.total; if (taken.has(a.id)) m.bad++;
+    }
+    const list = [...machines.values()].sort((x, y) => (!x.name - !y.name) || cmp(x.name, y.name));
+    const line = m => `🗄 <b>${esc(m.name || NO_MACHINE)}</b>: ${usd(m.today)} · ${m.accs} acc · ${m.total ? `${m.running}/${m.total} node chạy` : 'chưa có node'}${m.bad ? ` · ⚠️ ${m.bad} acc có vấn đề` : ''}`;
+    lines.push('');
+    lines.push(...list.slice(0, MACHINES_MAX).map(line));
+    if (list.length > MACHINES_MAX) lines.push(`🗄 +${list.length - MACHINES_MAX} máy khác, xem trên web`);
+    lines.push('');
+  }
+
   lines.push(`👤 ${accs.length} acc${issues.length ? `, <b>${taken.size} acc có vấn đề:</b>` : ' · ✅ không có vấn đề'}`);
   if (issues.length) lines.push(...issues);
 

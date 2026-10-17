@@ -12,6 +12,7 @@ const NOTIFY = [
   ['notify_suspect', 'Tài khoản nghi bị khoá', 'Node biến mất hết hoặc số dư tụt bất thường'],
   ['notify_auth', 'Cookie hết hạn'],
   ['notify_sync_error', 'Không lấy được dữ liệu'],
+  ['notify_add_done', 'Thêm acc xong', 'Thêm acc chạy ngầm: báo 1 tin khi cả lượt xong, kèm acc nào lỗi'],
   ['notify_rate_limit', 'Bị EarnApp giới hạn'],
   ['notify_payout', 'Lệnh rút mới, tiền về'],
   ['notify_withdraw', 'Kết quả rút theo lịch'],
@@ -108,7 +109,11 @@ export default function Settings() {
                 <NumInput value={s.sync_max_min} onChange={v => set('sync_max_min', v)} />
                 <Unit>phút</Unit>
               </NumberRow>
-              <NumberRow label="Giãn cách giữa 2 acc">
+              <NumberRow label="Số acc lấy cùng lúc" hint="Từ 1 đến 20. Acc dùng chung proxy (hoặc không proxy) vẫn lấy lần lượt">
+                <NumInput value={s.max_parallel} onChange={v => set('max_parallel', v)} />
+                <Unit>acc</Unit>
+              </NumberRow>
+              <NumberRow label="Giãn cách giữa 2 acc cùng proxy">
                 <NumInput value={s.account_delay_sec} onChange={v => set('account_delay_sec', v)} />
                 <Unit>giây</Unit>
               </NumberRow>
@@ -150,13 +155,6 @@ export default function Settings() {
             </div>
           </Card>
 
-          <Card>
-            <CardHeader title="Sao lưu" />
-            <div className="space-y-3 px-5 pb-5">
-              <a href="/api/backup"><Button variant="secondary" size="sm" icon={Download}>Tải file sao lưu</Button></a>
-              <p className="text-xs text-zinc-500">File chứa cookie các acc và khoá giải mã. Không gửi cho người khác.</p>
-            </div>
-          </Card>
 
           <Card>
             <CardHeader title="Mật khẩu" />
