@@ -1,6 +1,8 @@
 import { ProxyAgent, Socks5ProxyAgent } from 'undici';
 
 const BASE = 'https://earnapp.com/dashboard/api/';
+// Có proxy EarnApp giữ 20–40 giây mỗi lần gọi (Cloudflare cố tình làm chậm), chờ ngắn quá là báo lỗi oan
+const TIMEOUT_MS = 90000;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 export class AuthError extends Error {}
@@ -86,7 +88,7 @@ export class EarnAppClient {
     try {
       res = await fetch(url, {
         method, headers, body: body ? JSON.stringify(body) : undefined,
-        dispatcher: this.dispatcher, signal: AbortSignal.timeout(30000),
+        dispatcher: this.dispatcher, signal: AbortSignal.timeout(TIMEOUT_MS),
       });
     } catch (e) {
       // "fetch failed" không nói lên gì: lấy lý do thật (proxy chết, sai mật khẩu proxy, hết thời gian…)

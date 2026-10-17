@@ -426,7 +426,8 @@ async function syncOne(id, s) {
       ? { state: 'done', percent: 100, step: 'Đã tải xong', finished_at: Date.now() }
       : { state: 'error', step: 'Lấy dữ liệu lỗi', error: after?.last_error || 'Không rõ lỗi', finished_at: Date.now() });
     const t = new Date().toLocaleTimeString('vi-VN', { timeZone: s.timezone });
-    console.log(`[${t}] ${accName(acc)}: đã lấy dữ liệu, lần tới sau ${((next - Date.now()) / 60e3).toFixed(1)} phút`);
+    const when = `lần tới sau ${((next - Date.now()) / 60e3).toFixed(1)} phút`;
+    console.log(`[${t}] ${accName(acc)}: ${ok ? 'đã lấy dữ liệu' : `LỖI ${after?.last_error || 'không rõ'}`}, ${when}`);
   }
 }
 

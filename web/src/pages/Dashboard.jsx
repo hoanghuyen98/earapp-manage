@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { RefreshCw, Bell, Users, ChevronRight, ShieldAlert, Hourglass, KeyRound, AlertTriangle } from 'lucide-react';
-import { api, usd, vnd, timeAgo, fmtBytes, fmtDateTime, DEVICE_STATUS } from '../lib';
+import { api, usd, vnd, timeAgo, fmtBytes, fmtDateTime, explainError, DEVICE_STATUS } from '../lib';
 import { AccountState } from './Accounts';
 import { Card, CardHeader, Button, PageHeader, PageLoading, StatusDot, Empty, AccName, nameKey, byAccount, useData, useToast, cx } from '../ui';
 import { DailyBars, UsageBars, StackedDaily, SeriesLegend } from '../charts';
@@ -139,6 +139,40 @@ function AccountFlags({ r }) {
   );
 }
 
+/** Việc cần làm cho acc lâu không lấy được dữ liệu */
+function staleFix(r) {
+  if (r.auth_state === 'expired') return 'Cookie hết hạn: vào acc, bấm Sửa, dán cookie mới';
+  if (r.limited) return 'EarnApp đang giới hạn truy cập, web tự thử lại sau';
+  if (/qua proxy/i.test(r.last_error)) return 'Kiểm tra proxy của acc, chậm hoặc chết thì đổi proxy khác';
+  if (!r.last_ok_at && !r.last_error) return 'Chưa tới lượt lấy dữ liệu lần đầu';
+  return 'Web tự thử lại theo lịch. Lỗi mãi thì kiểm tra acc';
+}
+
+/** Acc lâu không lấy được dữ liệu: ghi rõ acc nào, máy nào, từ lúc nào, lỗi gì, cần làm gì */
+function StaleAlert({ rows }) {
+  const MAX = 5;
+  return (
+    <div className="mb-4 rounded-xl border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
+      <div className="flex items-center gap-2.5 font-semibold">
+        <AlertTriangle className="size-4 shrink-0" />
+        {rows.length} acc không lấy được dữ liệu mới, số liệu của {rows.length > 1 ? 'các' : ''} acc này đang cũ
+      </div>
+      <ul className="mt-2 space-y-2 pl-6.5">
+        {rows.slice(0, MAX).map(r => (
+          <li key={r.id}>
+            <Link to={`/accounts/${r.id}`} className="font-medium underline-offset-2 hover:underline">{r.label || r.email}</Link>
+            {r.group && <span className="text-amber-800/80 dark:text-amber-200/70"> · {r.group}</span>}
+            <span className="text-amber-800/80 dark:text-amber-200/70"> · {r.last_ok_at ? `lần cuối lấy được ${fmtDateTime(r.last_ok_at)} (${timeAgo(r.last_ok_at)})` : 'chưa lấy được lần nào'}</span>
+            {r.last_error && <div className="text-[13px]">Lỗi: {explainError(r.last_error)}</div>}
+            <div className="text-[13px] text-amber-800/80 dark:text-amber-200/70">👉 {staleFix(r)}</div>
+          </li>
+        ))}
+        {rows.length > MAX && <li><Link to="/accounts" className="underline-offset-2 hover:underline">… và {rows.length - MAX} acc khác, xem ở Máy & tài khoản</Link></li>}
+      </ul>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -203,12 +237,7 @@ export default function Dashboard() {
         <Button variant="secondary" icon={RefreshCw} loading={syncing} onClick={syncAll}>Đồng bộ</Button>
       </PageHeader>
 
-      {d.stale > 0 && (
-        <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-amber-300/60 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
-          <AlertTriangle className="size-4 shrink-0" />
-          <span><b className="font-semibold">{d.stale}/{d.accounts.total} acc</b> chưa cập nhật{d.stale_since ? ` từ ${fmtDateTime(d.stale_since)}` : ''}, số liệu có thể đã cũ.</span>
-        </div>
-      )}
+      {d.stale > 0 && <StaleAlert rows={d.rows.filter(r => r.stale).sort(byAccount)} />}
 
       {d.accounts.total === 0 && d.scope.all && (
         <Card className="mb-6 flex items-center justify-between gap-3 p-5">

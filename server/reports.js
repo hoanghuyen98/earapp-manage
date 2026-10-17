@@ -114,6 +114,7 @@ function accountRows(ids, today) {
       auth_state: a.auth_state, suspect: !!a.suspect_reason, limited: a.backoff_until > Date.now(), paused: !!a.paused,
       dev_total: dev.total || 0, dev_online: dev.online || 0, dev_idle: dev.idle || 0, dev_offline: dev.offline || 0, dev_banned: dev.banned || 0, dev_unknown: dev.unknown || 0,
       stale: !a.archived_at && !a.paused && (a.last_ok_at || 0) < Date.now() - staleMs(), last_ok_at: a.last_ok_at,
+      last_error: a.last_error || '', has_proxy: !!a.proxy,
       today: round(earnRange(null, today, today, a.id)), d7: round(earnRange(null, d7, today, a.id)),
       usage_today: db.prepare('SELECT COALESCE(SUM(bytes), 0) AS v FROM device_usage WHERE account_id = ? AND date = ?').get(a.id, uDay).v,
       uptime_today: up.c ? up.o / up.c : null,
