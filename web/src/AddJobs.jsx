@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, CheckCircle2, AlertTriangle, XCircle, X, ChevronDown, RotateCcw } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertTriangle, XCircle, X, ChevronDown, RotateCcw, Pencil } from 'lucide-react';
 import { api } from './lib';
-import { ProgressRow } from './pages/Accounts';
+import { ProgressRow, ProxyField } from './pages/Accounts';
 import { Button, useToast, cx } from './ui';
 
 // Thêm acc chạy ngầm: thẻ ở đầu mọi trang cho biết đang thêm tới đâu, xong thì báo kết quả.
@@ -12,6 +12,16 @@ const syncDone = r => ['done', 'error'].includes(r.sync?.state);
 
 function JobCard({ job, onDismiss, onRetry }) {
   const [open, setOpen] = useState(false);
+  // Proxy admin sửa cho dòng lỗi mạng / proxy: { số dòng: proxy }. Chưa sửa thì dùng proxy cũ
+  const [proxies, setProxies] = useState({});
+  const [retrying, setRetrying] = useState(false);
+  const proxyOf = r => proxies[r.line] ?? r.proxy ?? '';
+  const changed = job.items.filter(r => r.retry && proxyOf(r) !== (r.proxy ?? '')).length;
+  const retry = async () => {
+    setRetrying(true);
+    try { await onRetry(Object.fromEntries(job.items.filter(r => r.retry).map(r => [r.line, proxyOf(r)]))); }
+    finally { setRetrying(false); }
+  };
   const running = !job.finished_at;
   const bad = job.failed + job.sync_failed;
   // Tiến độ: kiểm tra cookie 30%, tải dữ liệu lần đầu 70%
@@ -45,14 +55,20 @@ function JobCard({ job, onDismiss, onRetry }) {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {job.retryable > 0 && <Button size="sm" variant="secondary" icon={RotateCcw} onClick={onRetry} title="Thử lại các acc lỗi mạng / proxy" className="hidden sm:inline-flex">Thử lại {job.retryable} acc lỗi mạng</Button>}
+          {job.retryable > 0 && !open && <Button size="sm" variant="secondary" icon={Pencil} onClick={() => setOpen(true)} className="hidden sm:inline-flex">Sửa proxy, thêm lại {job.retryable} acc</Button>}
           <button onClick={() => setOpen(!open)} title="Chi tiết" className="rounded-lg p-1.5 text-zinc-400 hover:bg-black/5 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200">
             <ChevronDown className={cx('size-4 transition-transform', open && 'rotate-180')} />
           </button>
           {!running && <button onClick={onDismiss} title="Đóng thông báo" className="rounded-lg p-1.5 text-zinc-400 hover:bg-black/5 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"><X className="size-4" /></button>}
         </div>
       </div>
-      {job.retryable > 0 && <Button size="sm" variant="secondary" icon={RotateCcw} onClick={onRetry} className="mt-2 ml-8 sm:hidden">Thử lại {job.retryable} acc lỗi mạng</Button>}
+      {job.retryable > 0 && !open && <Button size="sm" variant="secondary" icon={Pencil} onClick={() => setOpen(true)} className="mt-2 ml-8 sm:hidden">Sửa proxy, thêm lại {job.retryable} acc</Button>}
+      {open && job.retryable > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-8">
+          <Button size="sm" icon={RotateCcw} loading={retrying} onClick={retry}>Thêm lại {job.retryable} acc</Button>
+          <span className="text-xs text-zinc-500">{changed ? `Đã sửa proxy ${changed} acc. ` : 'Sửa proxy ở ô bên dưới (để trống = không dùng proxy). '}Cookie, tên giữ nguyên.</span>
+        </div>
+      )}
       {open && (
         <ul className="mt-3 max-h-80 space-y-2 overflow-y-auto pl-8">
           {job.items.map(r => r.ok
@@ -60,7 +76,14 @@ function JobCard({ job, onDismiss, onRetry }) {
             : (
               <li key={r.line} className="flex items-start gap-2.5 rounded-xl bg-white/70 px-3 py-2.5 text-sm dark:bg-zinc-800/60">
                 <XCircle className="size-5 shrink-0 text-red-500" />
-                <span><b>Acc {r.line}{r.label ? ` (${r.label})` : ''}:</b> {r.reason}</span>
+                <div className="min-w-0 flex-1">
+                  <div><b>Acc {r.line}{r.label ? ` (${r.label})` : ''}:</b> {r.reason}</div>
+                  {r.retry && (
+                    <div className="mt-2">
+                      <ProxyField compact id={`job-${job.id}-proxy-${r.line}`} value={proxyOf(r)} onChange={v => setProxies(p => ({ ...p, [r.line]: v }))} />
+                    </div>
+                  )}
+                </div>
               </li>
             ))}
           {waiting > 0 && <li className="px-3 text-xs text-zinc-500">Còn {waiting} acc đang chờ kiểm tra cookie…</li>}
@@ -111,16 +134,16 @@ export default function AddJobs() {
     setJobs(js => js.filter(j => j.id !== id));
     await api(`/add-jobs/${id}/dismiss`, { method: 'POST' }).catch(() => {});
   };
-  const retry = async id => {
+  const retry = async (id, proxies) => {
     try {
-      await api(`/add-jobs/${id}/retry`, { method: 'POST' });
-      toast('Đang thử lại các acc lỗi ở nền');
+      await api(`/add-jobs/${id}/retry`, { method: 'POST', body: { proxies } });
+      toast('Đang thêm lại các acc lỗi ở nền');
       window.dispatchEvent(new Event('addjobs:refresh'));
     } catch (e) { toast(e.message, 'error'); }
   };
   return (
     <div className="mb-5 space-y-2">
-      {jobs.map(j => <JobCard key={j.id} job={j} onDismiss={() => dismiss(j.id)} onRetry={() => retry(j.id)} />)}
+      {jobs.map(j => <JobCard key={j.id} job={j} onDismiss={() => dismiss(j.id)} onRetry={proxies => retry(j.id, proxies)} />)}
     </div>
   );
 }

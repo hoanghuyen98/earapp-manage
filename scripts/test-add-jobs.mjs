@@ -94,7 +94,7 @@ assert.ok(!/👉/.test(okMsg), 'không lỗi thì không có việc cần làm')
 // Lượt nhiều lỗi: chỉ liệt kê 5 dòng
 const many = jobs.formatAddJob({ ...v1, failed: 20, items: Array.from({ length: 20 }, (_, i) => ({ ok: false, line: i + 1, reason: 'Không kết nối được qua proxy: x' })) });
 assert.match(many, /… và 15 acc khác/);
-assert.match(many, /lỗi mạng \/ proxy: kiểm tra proxy rồi bấm "Thử lại"/);
+assert.match(many, /lỗi mạng \/ proxy: sửa proxy ngay trên thông báo ở web rồi bấm "Thêm lại"/);
 
 // 4. Thử lại: chỉ các dòng lỗi mạng / proxy (lỗi cookie thử lại cũng vô ích), lượt cũ được đóng, cookie không trả về trình duyệt
 assert.throws(() => jobs.retryJob(j1.id), /Không còn acc lỗi mạng/, 'lượt chỉ có lỗi cookie: không thử lại');
@@ -103,9 +103,14 @@ const jn = jobs.startAddJob([{ cookie: 'net9', label: 'N1', proxy: 'socks5://9.9
 await waitJob(jn.id);
 assert.equal(job(jn.id).failed, 2);
 assert.equal(job(jn.id).retryable, 1, '1 lỗi mạng, 1 lỗi cookie');
+// Thẻ báo lỗi: dòng lỗi mạng có kèm proxy cũ để sửa, dòng lỗi cookie thì không
+const failedItems = job(jn.id).items;
+assert.deepEqual(failedItems.map(r => [r.label, r.retry || false, r.proxy]), [['N1', true, 'socks5://9.9.9.9:1080'], ['N2', false, undefined]]);
+assert.throws(() => jobs.retryJob(jn.id, { 1: 'socks9://x' }), /Acc 1 \(N1\): Proxy chỉ hỗ trợ/, 'proxy sai thì báo ngay, không thêm');
+assert.ok(job(jn.id), 'proxy sai: lượt cũ vẫn còn để sửa tiếp');
 netDown = false;
 checks.length = 0;
-const j2 = jobs.retryJob(jn.id);
+const j2 = jobs.retryJob(jn.id, { 1: 'socks5://u:p@7.7.7.7:1080' });
 assert.equal(j2.total, 1, 'chỉ thử lại acc lỗi mạng');
 assert.ok(!job(jn.id), 'lượt cũ đã đóng');
 assert.equal(db.prepare('SELECT rows_enc FROM add_jobs WHERE id = ?').get(jn.id).rows_enc, '', 'đóng thì xoá cookie còn giữ');
@@ -113,8 +118,8 @@ assert.ok(!JSON.stringify(j2).includes('net9'), 'kết quả gửi về trình d
 await waitJob(j2.id);
 assert.deepEqual(checks, ['net9']);
 assert.equal(job(j2.id).added, 1, 'mạng ổn lại thì thêm được');
-assert.equal(job(j2.id).items[0].label, 'N1', 'giữ tên và proxy của dòng cũ');
-assert.equal(db.prepare("SELECT proxy FROM accounts WHERE email = 'net9@x.com'").get().proxy, 'socks5://9.9.9.9:1080');
+assert.equal(job(j2.id).items[0].label, 'N1', 'giữ tên của dòng cũ');
+assert.equal(db.prepare("SELECT proxy FROM accounts WHERE email = 'net9@x.com'").get().proxy, 'socks5://u:p@7.7.7.7:1080', 'dùng proxy mới đã sửa');
 
 // 5. Web khởi động lại giữa chừng: chạy tiếp dòng chưa xong, không kiểm tra lại dòng đã xong
 const rows = [{ no: 1, cookie: 'tok7', label: 'B1' }, { no: 2, cookie: 'tok8', label: 'B2' }];

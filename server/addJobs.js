@@ -4,6 +4,7 @@ import { addAccounts, checkInput, toLines } from './addAccounts.js';
 import { runCycle, getProgress } from './sync.js';
 import { sendTelegram, esc } from './telegram.js';
 import { explainError } from './alerts.js';
+import { normalizeProxy } from './earnapp.js';
 
 // Thêm acc chạy ngầm: admin bấm Thêm là xong, server tự kiểm tra cookie + tải dữ liệu lần đầu,
 // xong thì báo trên web (thẻ ở đầu trang) và 1 tin Telegram cho cả lượt.
@@ -104,7 +105,12 @@ export function viewJob(job) {
   const results = parse(job.results, []).sort((a, b) => a.line - b.line);
   const ok = results.filter(r => r.ok);
   const prog = Object.fromEntries(getProgress(ok.map(r => r.id)).map(p => [p.id, p]));
-  const items = results.map(r => r.ok ? { ...r, sync: prog[r.id] || null } : { ...r, reason: reason(r.error) });
+  // Dòng lỗi mạng / proxy còn thử lại được: gửi kèm proxy đang dùng để admin sửa ngay trên thẻ (cookie không gửi ra)
+  const canRetry = r => !r.ok && !cookieError(r.error);
+  const retryable = job.finished_at && job.rows_enc ? results.filter(canRetry) : [];
+  const proxyOf = retryable.length ? rowProxies(job) : {};
+  const items = results.map(r => r.ok ? { ...r, sync: prog[r.id] || null }
+    : { ...r, reason: reason(r.error), ...(retryable.includes(r) ? { retry: true, proxy: proxyOf[r.line] || '' } : {}) });
   const syncState = r => r.sync?.state;
   return {
     id: job.id, kind: job.kind || 'add', created_at: job.created_at, finished_at: job.finished_at, group_name: job.group_name, total: job.total,
@@ -115,7 +121,7 @@ export function viewJob(job) {
     loaded: items.filter(r => r.ok && syncState(r) === 'done').length,
     sync_failed: items.filter(r => r.ok && syncState(r) === 'error').length,
     // Thử lại chỉ có ích với lỗi mạng / proxy
-    retryable: job.finished_at && job.rows_enc ? results.filter(r => !r.ok && !cookieError(r.error)).length : 0,
+    retryable: retryable.length,
     items,
   };
 }
@@ -127,13 +133,29 @@ export function dismissJob(id) {
   db.prepare("UPDATE add_jobs SET seen = 1, rows_enc = '' WHERE id = ? AND finished_at IS NOT NULL").run(id);
 }
 
-/** Thử lại các dòng lỗi mạng / proxy của 1 lượt đã xong (cookie không rời khỏi server) */
-export function retryJob(id) {
+/** Proxy từng dòng của 1 lượt: proxy riêng của dòng, không có thì proxy chung của lượt. { số dòng: proxy } */
+function rowProxies(job) {
+  const { rows = [], defaults = {} } = parse(job.rows_enc ? decrypt(job.rows_enc) : '', {});
+  return Object.fromEntries(rows.map(r => [r.no, r.proxy || defaults.proxy || '']));
+}
+
+/**
+ * Thêm lại các dòng lỗi mạng / proxy của 1 lượt đã xong (cookie không rời khỏi server).
+ * proxies: { số dòng: proxy mới } admin sửa trên thẻ; dòng không sửa giữ proxy cũ
+ */
+export function retryJob(id, proxies = {}) {
   const job = getJob(id);
   const lines = new Set(parse(job?.results, []).filter(r => !r.ok && !cookieError(r.error)).map(r => r.line));
   if (!job?.finished_at || !job.rows_enc || !lines.size) throw new Error('Không còn acc lỗi mạng / proxy để thử lại');
   const { rows, defaults } = parse(decrypt(job.rows_enc), { rows: [], defaults: {} });
-  const next = startAddJob(rows.filter(r => lines.has(r.no)).map(({ no, ...r }) => r), defaults);
+  const old = rowProxies(job);
+  const retry = rows.filter(r => lines.has(r.no)).map(({ no, ...r }) => {
+    const proxy = no in proxies ? String(proxies[no] ?? '').trim() : old[no];
+    try { normalizeProxy(proxy); } catch (e) { throw new Error(`Acc ${no}${r.label ? ` (${r.label})` : ''}: ${e.message}`); }
+    return { ...r, proxy };
+  });
+  // Proxy đã ghi riêng từng dòng: bỏ proxy chung để dòng xoá trống proxy thì đi thẳng, không lấy lại proxy chung
+  const next = startAddJob(retry, { ...defaults, proxy: '' });
   dismissJob(id);
   return next;
 }
@@ -164,7 +186,7 @@ export function formatAddJob(v) {
   }
   const cookieBad = failed.filter(r => cookieError(r.error ?? r.reason)).length;
   if (cookieBad) lines.push('👉 Acc lỗi cookie: lấy cookie mới rồi thêm lại acc đó');
-  if (failed.length > cookieBad) lines.push('👉 Acc lỗi mạng / proxy: kiểm tra proxy rồi bấm "Thử lại" trên web');
+  if (failed.length > cookieBad) lines.push('👉 Acc lỗi mạng / proxy: sửa proxy ngay trên thông báo ở web rồi bấm "Thêm lại"');
   else if (syncBad.length) lines.push('👉 Web tự thử lại theo lịch. Lỗi mãi thì kiểm tra proxy của acc đó');
   return lines.join('\n');
 }

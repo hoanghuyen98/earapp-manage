@@ -172,7 +172,7 @@ app.post('/api/accounts', (req, res) => {
 app.get('/api/add-jobs', (req, res) => res.json(listJobs()));
 app.post('/api/add-jobs/:id/dismiss', (req, res) => { dismissJob(Number(req.params.id)); res.json({ ok: true }); });
 app.post('/api/add-jobs/:id/retry', (req, res) => {
-  try { res.json({ job: retryJob(Number(req.params.id)) }); } catch (e) { res.status(400).json({ error: e.message }); }
+  try { res.json({ job: retryJob(Number(req.params.id), req.body?.proxies || {}) }); } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 app.patch('/api/accounts/:id', async (req, res) => {
