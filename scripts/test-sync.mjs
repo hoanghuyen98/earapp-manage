@@ -8,7 +8,7 @@ process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eam-test-'));
 const { db, getSettings, setSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, AuthError, BannedError, RateLimitError } = await import('../server/earnapp.js');
-const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, markStale, getProgress, maxParallel } = await import('../server/sync.js');
+const { syncAccount, runCycle, nextDelayMs, pickDue, spreadOverdue, requestSyncAll, waitSyncAll, markStale, getProgress, maxParallel } = await import('../server/sync.js');
 const { summary } = await import('../server/stats.js');
 const { formatAlerts } = await import('../server/alerts.js');
 const has = (list, type) => list.some(a => a.type === type);
@@ -287,11 +287,27 @@ console.log(`rải ${n} acc quá hạn trong`, Math.min(...times).toFixed(1), '�
 assert.ok(times.every(t => t >= 0 && t <= 5), 'rải trong 5 phút đầu');
 assert.ok(Math.max(...times) - Math.min(...times) > 2, 'không dồn cùng 1 lúc');
 
-// 18. Nút "Đồng bộ ngay": xếp hàng cách nhau đúng khoảng nghỉ
-setSettings({ account_delay_sec: 3 });
-requestSyncAll(s());
-const q = db.prepare('SELECT next_sync_at t FROM accounts WHERE paused = 0 AND (backoff_until IS NULL OR backoff_until <= ?) ORDER BY id').all(Date.now()).map(r => r.t);
-assert.ok(q.slice(1).every((t, i) => Math.abs(t - q[i] - 3000) < 50), 'cách nhau 3 giây');
+// 18. Nút "Đồng bộ": lấy lần lượt từng acc, không song song dù max_parallel > 1
+{
+  setSettings({ account_delay_sec: 0, max_parallel: 10 });
+  fake = base();
+  const orig = EarnAppClient.prototype.fetchAll;
+  let now = 0, peak = 0, calls = 0;
+  EarnAppClient.prototype.fetchAll = async function () {
+    calls++; peak = Math.max(peak, ++now);
+    try { await new Promise(r => setTimeout(r, 20)); return await orig.call(this); } finally { now--; }
+  };
+  const n = requestSyncAll();
+  assert.equal(requestSyncAll(), n, 'bấm lại khi đang chạy không xếp thêm lượt');
+  await waitSyncAll();
+  EarnAppClient.prototype.fetchAll = orig;
+  // Acc test cookie giả (z…) lỗi trước khi gọi EarnApp: vẫn phải được xét xong, không kẹt "đang chờ"
+  const ids = db.prepare('SELECT id FROM accounts WHERE paused = 0').all().map(r => r.id);
+  assert.ok(n > 1 && calls >= 2, `đã lấy ${calls}/${n} acc`);
+  assert.ok(getProgress(ids).every(p => p.state !== 'queued' && p.state !== 'running'), 'xong hết, không acc nào kẹt chờ');
+  assert.equal(peak, 1, 'mỗi lúc chỉ 1 acc');
+  setSettings({ account_delay_sec: 3 });
+}
 
 // 19. Soạn tin Telegram: gom theo acc, có tên + email, giải thích rõ
 const sample = [

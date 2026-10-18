@@ -452,13 +452,41 @@ export function spreadOverdue(now = Date.now(), s = getSettings()) {
   return late.length;
 }
 
-/** Nút "Đồng bộ ngay" (tất cả): xếp hàng các acc cách nhau đúng khoảng nghỉ tối thiểu */
-export function requestSyncAll(s = getSettings()) {
-  const list = db.prepare('SELECT id FROM accounts WHERE paused = 0 AND (backoff_until IS NULL OR backoff_until <= ?) ORDER BY id').all(Date.now());
-  const up = db.prepare('UPDATE accounts SET next_sync_at = ? WHERE id = ?');
-  list.forEach((a, i) => up.run(Date.now() + i * s.account_delay_sec * 1000, a.id));
-  return list.length;
+let syncAllRun = null; // lượt bấm nút "Đồng bộ" đang chạy: { left, done }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/** Nút "Đồng bộ" (tất cả): lấy lần lượt TỪNG acc, xong acc này nghỉ account_delay_sec giây rồi mới tới acc sau
+ *  (không chạy song song như lịch tự động). Đang chạy mà bấm lại thì không xếp thêm lượt mới. */
+export function requestSyncAll() {
+  if (syncAllRun) return syncAllRun.left;
+  const ids = db.prepare('SELECT id FROM accounts WHERE paused = 0 AND (backoff_until IS NULL OR backoff_until <= ?) ORDER BY id')
+    .all(Date.now()).map(a => a.id);
+  // Giữ chỗ: lịch tự động không lấy các acc này trong lúc chờ tới lượt
+  for (const id of ids) {
+    pending.add(id);
+    progress.set(id, { state: 'queued', percent: 0, step: 'Đang chờ tới lượt', queued_at: Date.now() });
+  }
+  const run = { left: ids.length };
+  syncAllRun = run;
+  run.done = (async () => {
+    for (const [i, id] of ids.entries()) {
+      try {
+        const s = getSettings();
+        if (db.prepare('SELECT paused FROM accounts WHERE id = ?').get(id)?.paused === 0) await withLock(() => syncOne(id, s), id);
+        if (i < ids.length - 1) await sleep((Number(s.account_delay_sec) || 0) * 1000 * rand(0.7, 1.3));
+      } catch (e) {
+        console.error('sync all', id, e);
+      } finally {
+        pending.delete(id);
+        run.left--;
+      }
+    }
+    await flushAlerts(getSettings());
+  })().finally(() => { syncAllRun = null; });
+  return ids.length;
 }
+/** Chờ lượt bấm nút "Đồng bộ" đang chạy xong (dùng cho test) */
+export const waitSyncAll = () => syncAllRun?.done;
 
 /** Đồng bộ ngay các acc chỉ định (thêm acc, bấm Cập nhật). Không truyền ids = tất cả acc tới lượt */
 export async function runCycle(ids = null) {
