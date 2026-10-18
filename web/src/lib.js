@@ -93,8 +93,15 @@ export function duration(ms) {
   return `${mm}p`;
 }
 
-export const fmtDate = (v) => v ? new Date(v).toLocaleDateString('vi-VN') : '—';
-export const fmtDateTime = (v) => v ? new Date(v).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
+// Múi giờ hiển thị: theo Cài đặt trên server (giờ EarnApp), không theo máy người xem
+let TZ;
+export const setTimezone = (tz) => { TZ = tz || undefined; };
+export const tzName = (tz = TZ) => ({ 'Etc/GMT+1': 'giờ EarnApp', UTC: 'giờ UTC', 'Asia/Ho_Chi_Minh': 'giờ Việt Nam', 'Asia/Saigon': 'giờ Việt Nam' })[tz] || tz || 'giờ máy này';
+/** Ngày hôm nay (YYYY-MM-DD) theo múi giờ cài đặt, cộng thêm n ngày */
+export const todayIso = (n = 0) => new Date(Date.now() + n * 864e5).toLocaleDateString('en-CA', { timeZone: TZ });
+
+export const fmtDate = (v) => v ? new Date(v).toLocaleDateString('vi-VN', { timeZone: TZ }) : '—';
+export const fmtDateTime = (v) => v ? new Date(v).toLocaleString('vi-VN', { timeZone: TZ, hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
 export const shortDate = (d) => d ? `${d.slice(8, 10)}/${d.slice(5, 7)}` : '';
 
 export const DEVICE_STATUS = {

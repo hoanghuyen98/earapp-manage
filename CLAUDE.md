@@ -23,4 +23,7 @@ Web theo dõi nhiều acc EarnApp cho khách D2M. Backend Node 22 + Express + no
 ## API EarnApp (không chính thức)
 - Base `https://earnapp.com/dashboard/api/`. Gửi nguyên văn cookie khách dán (không lọc: có acc cần cả `brd_sess_id`).
 - Rút tiền: POST `redeem` {to, payment_method}, luôn rút toàn bộ số dư. Mức tối thiểu lấy từ `payment_methods` (PayPal/Wise $10, Amazon $50).
-- EarnApp tự rút (Auto-redeem) lúc 13:00 giờ VN mỗi ngày nếu acc có cài email nhận tiền.
+- EarnApp tự rút (Auto-redeem) lúc 06:00 UTC mỗi ngày nếu acc có cài email nhận tiền.
+
+## Múi giờ
+- Cả web (ngày giờ, chia thu nhập theo ngày, Excel, Telegram, lịch rút) theo giờ EarnApp: hằng số `EARNAPP_TZ` trong `server/db.js`, không có trong Cài đặt. Đổi xong khởi động lại; lúc khởi động lịch rút tự đổi giờ theo.

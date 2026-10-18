@@ -14,7 +14,7 @@ import { overview, report, scopeOptions } from './reports.js';
 import { startAddJob, listJobs, dismissJob, retryJob, resumeJobs } from './addJobs.js';
 import { BackupError, makeBackup, checkRestore, applyRestore, cancelRestore, exportAccounts, importAccounts } from './backup.js';
 import { MachineError, resolveMachine, listMachines, createMachine, updateMachine, deleteMachine, moveAccounts } from './machines.js';
-import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, validateTarget, notifyChange, recomputeSchedules, startWithdrawScheduler, withdrawProgress } from './withdraw.js';
+import { PAYOUT_METHODS, methodLabel, validateSchedule, describeSchedule, saveSchedule, runWithdraw, validateTarget, notifyChange, applyTimezone, startWithdrawScheduler, withdrawProgress } from './withdraw.js';
 
 const app = express();
 app.set('trust proxy', 'loopback');
@@ -41,7 +41,7 @@ app.post('/api/login', (req, res) => {
   }
   attempts.delete(ip);
   setSession(req, res, user);
-  res.json({ ok: true, username: user.username });
+  res.json({ ok: true, username: user.username, timezone: getSettings().timezone });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -58,7 +58,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.get('/api/me', (req, res) => res.json({ username: req.user }));
+app.get('/api/me', (req, res) => res.json({ username: req.user, timezone: getSettings().timezone }));
 
 app.post('/api/password', (req, res) => {
   const { current, next } = req.body || {};
@@ -403,6 +403,7 @@ app.get('/api/settings', (req, res) => {
 
 app.put('/api/settings', (req, res) => {
   const b = { ...req.body };
+  delete b.timezone; // múi giờ đặt trong code (EARNAPP_TZ)
   if (typeof b.telegram_token === 'string' && b.telegram_token.startsWith('••••')) delete b.telegram_token;
   if ('max_parallel' in b) b.max_parallel = Math.min(PARALLEL_LIMIT, Math.max(1, Math.round(Number(b.max_parallel) || 1)));
   for (const k of ['sync_min_min', 'sync_max_min', 'account_delay_sec', 'idle_hours', 'offline_grace_min', 'usd_vnd', 'daily_report_hour', 'error_alert_count']) {
@@ -419,7 +420,6 @@ app.put('/api/settings', (req, res) => {
     return res.status(400).json({ error: 'Thời gian tối đa phải lớn hơn hoặc bằng tối thiểu' });
   }
   setSettings(b);
-  if (b.timezone && b.timezone !== cur.timezone) recomputeSchedules(b.timezone);
   res.json({ ok: true });
 });
 
@@ -560,6 +560,7 @@ app.listen(config.port, err => {
     process.exit(1);
   }
   console.log(`EarnApp Manager chạy tại http://localhost:${config.port}`);
+  applyTimezone();
   startScheduler();
   resumeJobs();
   startWithdrawScheduler();

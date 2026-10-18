@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Send, Save, Download, HelpCircle, LogOut } from 'lucide-react';
-import { api, vnd } from '../lib';
+import { api, vnd, tzName } from '../lib';
 import { Card, CardHeader, Button, PageHeader, PageLoading, Field, Input, Toggle, ConfirmButton, useToast } from '../ui';
 
 const NOTIFY = [
@@ -92,7 +92,7 @@ export default function Settings() {
               <Toggle checked={!!s.daily_report} onChange={v => set('daily_report', v)} label="Báo cáo hằng ngày" />
               {s.daily_report && (
                 <div className="py-2.5">
-                  <Field label="Giờ gửi báo cáo"><Input type="number" min={0} max={23} value={s.daily_report_hour} onChange={e => set('daily_report_hour', e.target.value)} className="w-28" /></Field>
+                  <Field label={`Giờ gửi báo cáo (${tzName(s.timezone)})`}><Input type="number" min={0} max={23} value={s.daily_report_hour} onChange={e => set('daily_report_hour', e.target.value)} className="w-28" /></Field>
                 </div>
               )}
             </div>
@@ -103,13 +103,13 @@ export default function Settings() {
           <Card>
             <CardHeader title="Lấy dữ liệu & cảnh báo" />
             <div className="divide-y divide-zinc-100 px-5 pb-3 dark:divide-zinc-800">
-              <NumberRow label="Mỗi acc lấy dữ liệu" hint="Nên 5–10 phút">
+              <NumberRow label="Bao lâu cập nhật 1 acc" hint="Mỗi acc cứ sau ngần ấy phút (chọn ngẫu nhiên trong khoảng) web lại vào EarnApp lấy số liệu mới. Số nhỏ thì số liệu mới hơn nhưng gọi EarnApp nhiều hơn. Nên 5–10 phút">
                 <NumInput value={s.sync_min_min} onChange={v => set('sync_min_min', v)} />
                 <span className="text-sm text-zinc-500">–</span>
                 <NumInput value={s.sync_max_min} onChange={v => set('sync_max_min', v)} />
                 <Unit>phút</Unit>
               </NumberRow>
-              <NumberRow label="Số acc lấy cùng lúc" hint="Từ 1 đến 20. Acc dùng chung proxy (hoặc không proxy) vẫn lấy lần lượt">
+              <NumberRow label="Số acc lấy cùng một lúc" hint="Khi nhiều acc tới lượt cập nhật cùng lúc, web lấy song song tối đa ngần ấy acc thay vì chờ từng acc. Số lớn thì cập nhật nhiều acc nhanh hơn. Acc dùng chung proxy (hoặc không proxy) vẫn lấy lần lượt. Từ 1 đến 20">
                 <NumInput value={s.max_parallel} onChange={v => set('max_parallel', v)} />
                 <Unit>acc</Unit>
               </NumberRow>

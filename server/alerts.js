@@ -1,5 +1,6 @@
 import { esc } from './telegram.js';
 import { fullName, byAccount } from './accname.js';
+import { EARNAPP_TZ } from './db.js';
 
 // Soạn tin Telegram từ danh sách cảnh báo.
 // Mỗi mục: 1 dòng tiêu đề in đậm, vài dòng "•" chi tiết, 1 dòng "👉" việc cần làm (nếu có).
@@ -14,6 +15,8 @@ const BAN_REASON = {
 const METHOD = { 'paypal.com': 'PayPal', 'amazon.com': 'Amazon Gift Card', wise: 'Wise', 'wise.com': 'Wise' };
 // Ai bấm Rút ngay (lịch tự động thì ghi "theo lịch")
 const byLine = a => a.manual ? `\n• Bấm Rút ngay trên web${a.ip ? ` (IP ${esc(a.ip)})` : ''}` : '\n• Rút theo lịch hẹn';
+// EarnApp tự rút (Auto-redeem) lúc 06:00 UTC mỗi ngày; ghi ra theo múi giờ của web
+const AUTO_REDEEM_AT = Date.UTC(2026, 0, 1, 6, 0);
 export const methodName = m => METHOD[m] || (/^amazon/.test(m || '') ? 'Amazon Gift Card' : m || '—');
 
 /** Lỗi kỹ thuật -> câu dễ hiểu */
@@ -65,7 +68,7 @@ function groupBy(items, key) {
 }
 
 export function formatAlerts(alerts, s) {
-  const tz = s.timezone || 'Asia/Ho_Chi_Minh';
+  const tz = s.timezone || EARNAPP_TZ;
   const usd = n => '$' + (Number(n) || 0).toFixed(2);
   const vnd = n => Math.round((Number(n) || 0) * (s.usd_vnd || 0)).toLocaleString('vi-VN') + 'đ';
   const money = n => s.usd_vnd ? `${usd(n)} (≈ ${vnd(n)})` : usd(n);
@@ -86,7 +89,7 @@ export function formatAlerts(alerts, s) {
         if (!a.new) return `ℹ️ <b>Auto-redeem trên EarnApp đã tắt</b>\n• Trước đó: ${fmt(a.old)}`;
         return `🚨 <b>Email nhận tiền trên EarnApp bị đổi</b>\n• Cũ: ${fmt(a.old)}\n• Mới: <b>${fmt(a.new)}</b>`
           + (a.foreign ? '\n• ⚠️ Email mới KHÔNG phải email của acc / danh sách cho phép' : '')
-          + '\n• EarnApp sẽ tự rút hết số dư tới email mới lúc 13:00 mỗi ngày'
+          + `\n• EarnApp sẽ tự rút hết số dư tới email mới lúc ${hhmm(AUTO_REDEEM_AT)} mỗi ngày`
           + '\n👉 Không phải bạn đổi: vào EarnApp → Cashout → Auto-redeem → Disable ngay, rồi đổi mật khẩu Google';
       }
       case 'withdraw_changed':

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Trash2, PiggyBank, Users, Download, Info } from 'lucide-react';
-import { api, usd, vnd, fmtBytes } from '../lib';
+import { api, usd, vnd, fmtBytes, todayIso } from '../lib';
 import { Card, CardHeader, Button, PageHeader, PageLoading, Modal, Field, Input, Select, Empty, DeviceBadge, AccountBadge, AccName, nameKey, byAccount, useData, useToast, cx } from '../ui';
 import { ProfitBars, DailyBars, UsageBars } from '../charts';
 import { StatStrip } from './Dashboard';
@@ -11,8 +11,7 @@ const fmtD = d => d.split('-').reverse().join('/');
 const ymd = dt => dt.toISOString().slice(0, 10);
 
 function presetRange(key) {
-  const now = new Date();
-  const today = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  const today = new Date(todayIso() + 'T00:00:00Z');
   const back = n => { const d = new Date(today); d.setUTCDate(d.getUTCDate() - n); return ymd(d); };
   if (key === 'month') return { from: ymd(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1))), to: ymd(today) };
   if (key === 'last_month') return { from: ymd(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1))), to: ymd(new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 0))) };
@@ -22,7 +21,7 @@ function presetRange(key) {
 
 function CostModal({ open, onClose, onSaved }) {
   const toast = useToast();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   const [form, setForm] = useState({ name: '', amount: '', period: 'monthly', date: today, note: '' });
   const [loading, setLoading] = useState(false);
   const amountNum = Number(String(form.amount).replace(/\D/g, ''));

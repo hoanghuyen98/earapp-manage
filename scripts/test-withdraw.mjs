@@ -6,11 +6,11 @@ import assert from 'node:assert/strict';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'eam-test-'));
 process.env.PAYOUT_EMAILS = 'me@paypal.com, Pay1@test.com;pay2@test.com';
 
-const { db, setSettings } = await import('../server/db.js');
+const { db, setSettings, getSettings } = await import('../server/db.js');
 const { encrypt } = await import('../server/crypto.js');
 const { EarnAppClient, NetworkError } = await import('../server/earnapp.js');
 const { alertQueue } = await import('../server/sync.js');
-const { zonedTs, nextRunAt, validateSchedule, saveSchedule, runWithdraw, validateTarget, checkDueWithdrawals, describeSchedule, notifyChange, withdrawProgress } = await import('../server/withdraw.js');
+const { zonedTs, nextRunAt, validateSchedule, saveSchedule, runWithdraw, validateTarget, checkDueWithdrawals, describeSchedule, notifyChange, withdrawProgress, changeTimezone, applyTimezone } = await import('../server/withdraw.js');
 const { config } = await import('../server/config.js');
 const { syncAccount } = await import('../server/sync.js');
 const { formatAlerts } = await import('../server/alerts.js');
@@ -268,6 +268,47 @@ const msg = formatAlerts(sent.filter(a => a.type.startsWith('withdraw_')), { tim
 assert.match(msg, /Đã gửi lệnh rút \$12\.50<\/b>/);
 assert.match(msg, /Bỏ qua lần rút/);
 assert.match(msg, /THẤT BẠI/);
+
+// Đổi múi giờ: lịch đổi giờ theo, vẫn rút đúng thời điểm cũ
+{
+  const EA = 'Etc/GMT+1';
+  const now = zonedTs('2026-10-18', '10:00', TZ);
+  const accId = db.prepare('SELECT id FROM accounts ORDER BY id LIMIT 1').get().id;
+  const put = sch => db.prepare(`INSERT OR REPLACE INTO withdraw_schedules(account_id, mode, run_date, weekdays, time, method, email, enabled, next_run_at, attempts, created_at)
+    VALUES (?, ?, ?, ?, ?, 'paypal.com', 'me@paypal.com', 1, ?, 0, 0)`).run(accId, sch.mode, sch.run_date ?? null, sch.weekdays ?? '', sch.time, nextRunAt(sch, now, TZ));
+  const get = () => db.prepare('SELECT * FROM withdraw_schedules WHERE account_id = ?').get(accId);
+
+  put({ mode: 'weekly', weekdays: '1,4', time: '13:00' });
+  const before = get().next_run_at;
+  changeTimezone(TZ, EA, now);
+  let r = get();
+  assert.equal(r.time, '05:00', '13h VN = 5h giờ EarnApp');
+  assert.equal(r.weekdays, '1,4', 'không qua nửa đêm: giữ thứ');
+  assert.equal(r.next_run_at, before, 'vẫn rút đúng thời điểm cũ');
+
+  put({ mode: 'weekly', weekdays: '0,3', time: '07:30' });
+  changeTimezone(TZ, EA, now);
+  r = get();
+  assert.equal(r.time, '23:30');
+  assert.equal(r.weekdays, '2,6', '7h30 CN, T4 VN = 23h30 T7, T3 giờ EarnApp');
+
+  put({ mode: 'once', run_date: '2026-10-20', time: '06:00' });
+  const once = get().next_run_at;
+  changeTimezone(TZ, EA, now);
+  r = get();
+  assert.deepEqual([r.run_date, r.time, r.next_run_at], ['2026-10-19', '22:00', once]);
+
+  // Khởi động với múi giờ mới trong code: tự chuyển lịch, lưu lại; chạy lại lần nữa thì không đổi gì
+  setSettings({ timezone: TZ });
+  put({ mode: 'weekly', weekdays: '1', time: '13:00' });
+  applyTimezone(EA);
+  assert.equal(getSettings().timezone, EA);
+  assert.equal(get().time, '05:00');
+  applyTimezone(EA);
+  assert.equal(get().time, '05:00');
+  setSettings({ timezone: TZ });
+  db.prepare('DELETE FROM withdraw_schedules WHERE account_id = ?').run(accId);
+}
 
 console.log('✓ test-withdraw: tất cả đều đúng');
 process.exit(0);

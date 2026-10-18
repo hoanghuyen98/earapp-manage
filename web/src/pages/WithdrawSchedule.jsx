@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CalendarClock, Pencil, Send, Trash2, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
-import { api, usd, fmtDateTime, timeUntil } from '../lib';
+import { api, usd, fmtDateTime, timeUntil, tzName } from '../lib';
 import { Card, CardHeader, Button, Badge, Modal, Field, Input, Select, Tabs, Toggle, SearchInput, Empty, ConfirmButton, PageLoading, GroupTag, TimePicker, DatePicker, byAccount, useData, useToast, cx } from '../ui';
 
 // Auto-redeem đang cài trên EarnApp của acc (null = chưa cài)
@@ -9,7 +9,6 @@ const OWN = '__own__';
 const parseRd = a => { try { return a.redeem_details ? JSON.parse(a.redeem_details) : null; } catch { return null; } };
 
 // Tên múi giờ dễ đọc
-const tzName = tz => tz === 'Asia/Ho_Chi_Minh' || tz === 'Asia/Saigon' ? 'giờ Việt Nam' : tz;
 // 0 = Chủ nhật (giống EarnApp / JS)
 const WEEKDAYS = [[1, 'T2'], [2, 'T3'], [3, 'T4'], [4, 'T5'], [5, 'T6'], [6, 'T7'], [0, 'CN']];
 const dayLabel = d => WEEKDAYS.find(w => w[0] === d)?.[1];
@@ -58,7 +57,7 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
   const toast = useToast();
   const first = targets[0] || {};
   const tomorrow = new Date(Date.now() + 864e5).toLocaleDateString('en-CA', { timeZone: timezone });
-  const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: timezone });
   const [f, setF] = useState(() => ({
     mode: first.mode || 'weekly',
     run_date: first.run_date || tomorrow,
@@ -104,7 +103,7 @@ function ScheduleForm({ open, onClose, targets, methods, timezone, emails, onSav
         {f.mode === 'once' ? (
           <div className="grid grid-cols-2 gap-3">
             <Field label="Ngày" hint={f.run_date && `Là ${dayLabel(weekdayOfDate(f.run_date))}`}>
-              <DatePicker value={f.run_date} min={todayIso} today={todayIso} onChange={v => set('run_date', v)} />
+              <DatePicker value={f.run_date} min={today} today={today} onChange={v => set('run_date', v)} />
             </Field>
             <Field label={`Giờ (${tzName(timezone)})`}><TimePicker value={f.time} onChange={v => set('time', v)} /></Field>
           </div>

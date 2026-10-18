@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './index.css';
-import { api } from './lib';
+import { api, setTimezone } from './lib';
 import { ToastProvider, PageLoading } from './ui';
 import Layout from './Layout';
 import Login from './pages/Login';
@@ -19,14 +19,14 @@ function App() {
   const [user, setUser] = useState(undefined);
 
   useEffect(() => {
-    api('/me').then(r => setUser(r.username)).catch(() => setUser(null));
+    api('/me').then(r => { setTimezone(r.timezone); setUser(r.username); }).catch(() => setUser(null));
     const onLogout = () => setUser(null);
     window.addEventListener('auth:logout', onLogout);
     return () => window.removeEventListener('auth:logout', onLogout);
   }, []);
 
   if (user === undefined) return <PageLoading />;
-  if (!user) return <Login onLogin={setUser} />;
+  if (!user) return <Login onLogin={(u, tz) => { setTimezone(tz); setUser(u); }} />;
 
   return (
     <Routes>

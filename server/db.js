@@ -252,6 +252,11 @@ addColumn('add_jobs', 'kind', "TEXT NOT NULL DEFAULT 'add'"); // add = thêm b�
   }
 }
 
+// Múi giờ của cả web (giờ EarnApp). Đặt ở đây, không có trong Cài đặt. Đổi xong khởi động lại, lịch rút tự đổi giờ theo
+export const EARNAPP_TZ = 'Etc/GMT+1'; // tên IANA ngược dấu: Etc/GMT+1 = UTC−1
+/** " (giờ EarnApp)" để ghi kèm giờ trong tin Telegram */
+export const tzLabel = tz => ({ [EARNAPP_TZ]: ' (giờ EarnApp)', UTC: ' (giờ UTC)' })[tz] || '';
+
 const DEFAULT_SETTINGS = {
   sync_min_min: 5,             // mỗi acc lấy dữ liệu ngẫu nhiên từ 5...
   sync_max_min: 10,            // ...đến 10 phút/lần
@@ -259,7 +264,7 @@ const DEFAULT_SETTINGS = {
   max_parallel: 10,            // số acc lấy dữ liệu cùng lúc (acc khác proxy), 1–20
   idle_hours: 6,               // online mà không tăng tiền quá N giờ (trong khi node khác cùng acc vẫn ra tiền) -> vàng
   offline_grace_min: 10,       // offline quá N phút mới báo
-  timezone: 'Asia/Ho_Chi_Minh',
+  timezone: EARNAPP_TZ,         // lấy từ EARNAPP_TZ lúc khởi động (applyTimezone), không sửa qua Cài đặt
   usd_vnd: 26000,
   telegram_token: '',
   telegram_chat_id: '',

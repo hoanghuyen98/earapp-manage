@@ -1,4 +1,4 @@
-import { db, getSettings, addEvent } from './db.js';
+import { db, getSettings, setSettings, addEvent, EARNAPP_TZ } from './db.js';
 import { config } from './config.js';
 import { decrypt } from './crypto.js';
 import { EarnAppClient, AuthError, NetworkError, RateLimitError } from './earnapp.js';
@@ -261,11 +261,33 @@ export async function checkDueWithdrawals(now = Date.now()) {
   }
 }
 
-/** Đổi múi giờ trong Cài đặt: tính lại giờ hẹn các lịch hằng tuần */
-export function recomputeSchedules(tz = getSettings().timezone, now = Date.now()) {
-  for (const sch of db.prepare('SELECT * FROM withdraw_schedules WHERE enabled = 1 AND attempts = 0').all()) {
-    db.prepare('UPDATE withdraw_schedules SET next_run_at = ? WHERE account_id = ?').run(nextRunAt(sch, now, tz), sch.account_id);
+const hhmmIn = (ts, tz) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ts);
+
+/** Đổi múi giờ trong Cài đặt: chuyển giờ/ngày/thứ của các lịch rút sang múi giờ mới, vẫn rút đúng thời điểm như cũ */
+export function changeTimezone(from, to, now = Date.now()) {
+  for (const sch of db.prepare('SELECT * FROM withdraw_schedules').all()) {
+    let upd;
+    if (sch.mode === 'once') {
+      const ts = zonedTs(sch.run_date, sch.time, from);
+      upd = { run_date: localDate(ts, to), weekdays: sch.weekdays, time: hhmmIn(ts, to) };
+    } else {
+      const sunday = '2026-01-04';
+      const at = parseWeekdays(sch.weekdays).map(d => zonedTs(addDays(sunday, d), sch.time, from));
+      upd = { run_date: sch.run_date, weekdays: [...new Set(at.map(ts => weekdayOf(localDate(ts, to))))].sort().join(','), time: at.length ? hhmmIn(at[0], to) : sch.time };
+    }
+    const next = sch.enabled && sch.attempts === 0 ? nextRunAt({ ...sch, ...upd }, now, to) : sch.next_run_at;
+    db.prepare('UPDATE withdraw_schedules SET run_date = ?, weekdays = ?, time = ?, next_run_at = ? WHERE account_id = ?')
+      .run(upd.run_date, upd.weekdays, upd.time, next, sch.account_id);
   }
+}
+
+/** Lúc khởi động: múi giờ trong code (EARNAPP_TZ) khác múi giờ đang dùng thì chuyển lịch rút rồi lưu lại */
+export function applyTimezone(tz = EARNAPP_TZ) {
+  const cur = getSettings().timezone;
+  if (cur === tz) return;
+  changeTimezone(cur, tz);
+  setSettings({ timezone: tz });
+  console.log(`Đổi múi giờ ${cur} -> ${tz}`);
 }
 
 export function startWithdrawScheduler() {

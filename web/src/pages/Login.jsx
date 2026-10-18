@@ -13,7 +13,7 @@ export default function Login({ onLogin }) {
     setLoading(true); setError('');
     try {
       const r = await api('/login', { method: 'POST', body: form });
-      onLogin(r.username);
+      onLogin(r.username, r.timezone);
     } catch (err) {
       setError(err.message);
     } finally {

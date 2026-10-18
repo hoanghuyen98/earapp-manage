@@ -1,4 +1,4 @@
-import { db } from './db.js';
+import { db, EARNAPP_TZ, tzLabel } from './db.js';
 import { esc } from './telegram.js';
 import { localDate, summary, staleMs } from './stats.js';
 import { cmp, byAccount } from './accname.js';
@@ -25,7 +25,7 @@ function nameList(list, hasMachines) {
 
 /** Báo cáo cuối ngày gửi Telegram: gọn, độ dài cố định dù có bao nhiêu acc. Chi tiết xem trên web */
 export function formatDailyReport(s, now = Date.now()) {
-  const tz = s.timezone || 'Asia/Ho_Chi_Minh';
+  const tz = s.timezone || EARNAPP_TZ;
   const t = summary();
   const today = localDate(now, tz);
   const usd = n => '$' + (Number(n) || 0).toFixed(2);
@@ -42,7 +42,7 @@ export function formatDailyReport(s, now = Date.now()) {
   const isStale = a => !a.paused && a.status !== 'banned' && (a.last_ok_at || 0) < staleCut;
 
   const [, mo, dd] = today.split('-');
-  const lines = [`📊 <b>Báo cáo ${dd}/${mo}</b> · ${hhmm(now)}`, ''];
+  const lines = [`📊 <b>Báo cáo ${dd}/${mo}</b> · ${hhmm(now)}${tzLabel(tz)}`, ''];
 
   lines.push(`💵 Hôm nay: <b>${usd(t.today)}</b>${s.usd_vnd ? ` (${vnd(t.today)})` : ''} · hôm qua ${usd(t.yesterday)}`);
   lines.push(`💰 Số dư: <b>${usd(t.current)}</b>${t.pending_count ? ` · chờ về ví ${usd(t.pending)}` : ''}`);
